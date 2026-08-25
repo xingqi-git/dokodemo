@@ -12,6 +12,7 @@ class GroupsContainer(QScrollArea):
     """
 
     shortcutMoved = pyqtSignal(str, int, str, int)
+    shortcutLaunched = pyqtSignal()
     groupMoved = pyqtSignal(int, int)  # from_index, to_index（仅自定义分组之间）
     groupRenamed = pyqtSignal(str, str)
     groupColorChanged = pyqtSignal(str, int)
@@ -37,8 +38,6 @@ class GroupsContainer(QScrollArea):
 
         self.setAcceptDrops(True)
         self._drag_group_id = None
-
-        self.refresh()
 
     def refresh(self):
         """根据配置刷新所有分组（全量重建）"""
@@ -71,6 +70,7 @@ class GroupsContainer(QScrollArea):
             self._container
         )
         gw.shortcutMoved.connect(self.shortcutMoved.emit)
+        gw.shortcutLaunched.connect(self.shortcutLaunched.emit)
         gw.groupDragStarted.connect(self._on_group_drag_started)
         gw.groupRenamed.connect(self.groupRenamed.emit)
         gw.groupColorChanged.connect(self.groupColorChanged.emit)

@@ -1,10 +1,21 @@
 import os
+from functools import lru_cache
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QBrush
 from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtWidgets import QFileIconProvider
 
 # 全局图标缓存，避免重复提取
 _icon_cache = {}
+
+# 全局复用 QFileIconProvider，避免重复创建
+_icon_provider = None
+
+
+def _get_icon_provider():
+    global _icon_provider
+    if _icon_provider is None:
+        _icon_provider = QFileIconProvider()
+    return _icon_provider
 
 
 def scan_shortcuts(directory):
@@ -45,12 +56,12 @@ def clear_icon_cache():
 def _extract_icon(path, size):
     """提取快捷方式目标文件的图标（不带箭头）"""
     target_path = _resolve_lnk_target(path)
+    provider = _get_icon_provider()
+    from PyQt5.QtCore import QFileInfo
 
     # 优先提取目标文件图标（不带箭头）
     if target_path and os.path.exists(target_path):
         try:
-            from PyQt5.QtCore import QFileInfo
-            provider = QFileIconProvider()
             icon = provider.icon(QFileInfo(target_path))
             if not icon.isNull():
                 return _icon_to_pixmap(icon, size)
@@ -59,8 +70,6 @@ def _extract_icon(path, size):
 
     # 兜底：.lnk 本身图标（可能带箭头）
     try:
-        from PyQt5.QtCore import QFileInfo
-        provider = QFileIconProvider()
         icon = provider.icon(QFileInfo(path))
         if not icon.isNull():
             return _icon_to_pixmap(icon, size)
@@ -82,44 +91,40 @@ def _icon_to_pixmap(icon, size):
 
 
 def _crop_and_fill(pixmap, size):
-    """裁剪掉透明边缘，然后拉伸填满整个 size x size 区域"""
+    """把 pixmap 按比例缩放后居中放到 size x size 的画布上"""
     if pixmap.isNull():
         return _get_default_icon(size)
 
-    image = pixmap.toImage()
-    min_x = image.width()
-    min_y = image.height()
-    max_x = 0
-    max_y = 0
-    has_content = False
-
-    for y in range(image.height()):
-        for x in range(image.width()):
-            if image.pixelColor(x, y).alpha() > 10:
-                if x < min_x:
-                    min_x = x
-                if y < min_y:
-                    min_y = y
-                if x > max_x:
-                    max_x = x
-                if y > max_y:
-                    max_y = y
-                has_content = True
-
-    if not has_content:
-        result = QPixmap(size, size)
-        result.fill(Qt.transparent)
-        return result
-
-    content = image.copy(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
-    return QPixmap.fromImage(content).scaled(
-        size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+    # 保持比例缩放
+    scaled = pixmap.scaled(
+        size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
     )
 
+    # 居中绘制到透明画布
+    result = QPixmap(size, size)
+    result.fill(Qt.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    x = (size - scaled.width()) // 2
+    y = (size - scaled.height()) // 2
+    painter.drawPixmap(x, y, scaled)
+    painter.end()
+    return result
 
+
+@lru_cache(maxsize=512)
 def _resolve_lnk_target(lnk_path):
-    """解析 .lnk 快捷方式的目标路径"""
-    # 方法1：pywin32（最可靠）
+    """解析 .lnk 快捷方式的目标路径（带缓存）"""
+    # 方法1：pylnk3（轻量级，优先使用）
+    try:
+        import pylnk3
+        target = pylnk3.parse(lnk_path).path
+        if target and os.path.exists(target):
+            return target
+    except (ImportError, Exception):
+        pass
+
+    # 方法2：pywin32（更可靠，但更重）
     try:
         import pythoncom
         from win32com.shell import shell
@@ -136,15 +141,6 @@ def _resolve_lnk_target(lnk_path):
                 return target
         finally:
             pythoncom.CoUninitialize()
-    except (ImportError, Exception):
-        pass
-
-    # 方法2：pylnk3（轻量级）
-    try:
-        import pylnk3
-        target = pylnk3.parse(lnk_path).path
-        if target and os.path.exists(target):
-            return target
     except (ImportError, Exception):
         pass
 

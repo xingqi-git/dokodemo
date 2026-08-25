@@ -17,6 +17,7 @@ class GroupWidget(QFrame):
     """
 
     shortcutMoved = pyqtSignal(str, int, str, int)  # from_group, from_idx, to_group, to_idx
+    shortcutLaunched = pyqtSignal()  # 组内快捷方式被启动
     groupDragStarted = pyqtSignal(str)  # group_id
     groupRenamed = pyqtSignal(str, str)  # group_id, new_name
     groupColorChanged = pyqtSignal(str, int)  # group_id, color_index
@@ -112,6 +113,7 @@ class GroupWidget(QFrame):
                 self.group_id, i,
                 self.flow_widget
             )
+            item.shortcutLaunched.connect(self.shortcutLaunched.emit)
             self.flow_layout.addWidget(item)
 
         self.count_label.setText(f"{len(self.shortcuts)} 项")
