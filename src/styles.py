@@ -49,10 +49,10 @@ QPushButton#toolBtn {
     background-color: #4A90D9;
     color: white;
     border: none;
-    border-radius: 6px;
-    padding: 6px 16px;
-    font-size: 13px;
-    min-height: 28px;
+    border-radius: 4px;
+    padding: 3px 12px;
+    font-size: 12px;
+    min-height: 22px;
 }
 
 QPushButton#toolBtn:hover {
@@ -67,10 +67,10 @@ QPushButton#toolBtnSecondary {
     background-color: #F0F0F0;
     color: #333;
     border: 1px solid #D0D0D0;
-    border-radius: 6px;
-    padding: 6px 16px;
-    font-size: 13px;
-    min-height: 28px;
+    border-radius: 4px;
+    padding: 3px 12px;
+    font-size: 12px;
+    min-height: 22px;
 }
 
 QPushButton#toolBtnSecondary:hover {

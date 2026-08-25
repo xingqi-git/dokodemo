@@ -9,7 +9,7 @@ def _set_app_id():
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "shortcutmanager.app.v1"
+                "dokodemo.app"
             )
         except Exception:
             pass
@@ -25,7 +25,7 @@ from src.main_window import MainWindow
 from src.app_icon import get_app_icon
 
 # 单实例本地服务名
-_SINGLE_INSTANCE_SERVER = "DokodemoShortcutManager_SingleInstance"
+_SINGLE_INSTANCE_SERVER = "dokodemo_SingleInstance"
 
 
 def _get_resource_path(relative_path):
@@ -38,8 +38,10 @@ def _get_resource_path(relative_path):
 
 
 def _show_window(window):
-    """唤醒并最大化显示主窗口"""
-    window.showMaximized()
+    """唤醒主窗口，保持之前的最大化状态"""
+    window.showNormal()  # 先 showNormal，再根据状态决定是否最大化
+    if window._is_maximized:
+        window.showMaximized()
     window.raise_()
     window.activateWindow()
 
@@ -80,12 +82,12 @@ def main():
     config_path = _get_resource_path("config.json")
 
     window = MainWindow(config_path)
-    window.setWindowTitle("快捷方式管理")
+    window.setWindowTitle("dokodemo")
     window.show()
 
     # ---- 系统托盘 ----
     tray = QSystemTrayIcon(app_icon)
-    tray.setToolTip("快捷方式管理")
+    tray.setToolTip("dokodemo")
 
     tray_menu = QMenu()
 

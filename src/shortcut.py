@@ -91,16 +91,76 @@ def _icon_to_pixmap(icon, size):
 
 
 def _crop_and_fill(pixmap, size):
-    """把 pixmap 按比例缩放后居中放到 size x size 的画布上"""
+    """先裁掉透明边缘，再按比例缩放居中填充"""
     if pixmap.isNull():
         return _get_default_icon(size)
 
-    # 保持比例缩放
-    scaled = pixmap.scaled(
+    image = pixmap.toImage()
+    w, h = image.width(), image.height()
+
+    # 从上往下扫描，找到第一个有内容的行
+    top = 0
+    while top < h:
+        found = False
+        for x in range(w):
+            if image.pixelColor(x, top).alpha() > 10:
+                found = True
+                break
+        if found:
+            break
+        top += 1
+
+    # 从下往上扫描
+    bottom = h - 1
+    while bottom > top:
+        found = False
+        for x in range(w):
+            if image.pixelColor(x, bottom).alpha() > 10:
+                found = True
+                break
+        if found:
+            break
+        bottom -= 1
+
+    # 从左往右扫描
+    left = 0
+    while left < w:
+        found = False
+        for y in range(top, bottom + 1):
+            if image.pixelColor(left, y).alpha() > 10:
+                found = True
+                break
+        if found:
+            break
+        left += 1
+
+    # 从右往左扫描
+    right = w - 1
+    while right > left:
+        found = False
+        for y in range(top, bottom + 1):
+            if image.pixelColor(right, y).alpha() > 10:
+                found = True
+                break
+        if found:
+            break
+        right -= 1
+
+    if top >= bottom or left >= right:
+        # 全透明，返回默认
+        result = QPixmap(size, size)
+        result.fill(Qt.transparent)
+        return result
+
+    content = image.copy(left, top, right - left + 1, bottom - top + 1)
+    content_pm = QPixmap.fromImage(content)
+
+    # 按比例缩放
+    scaled = content_pm.scaled(
         size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
     )
 
-    # 居中绘制到透明画布
+    # 居中绘制
     result = QPixmap(size, size)
     result.fill(Qt.transparent)
     painter = QPainter(result)

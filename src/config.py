@@ -21,6 +21,7 @@ PRESET_COLORS = [
 DEFAULT_CONFIG = {
     "shortcut_dir": "",
     "icon_size": 64,
+    "columns": 2,
     "groups": []
 }
 
@@ -76,6 +77,16 @@ class ConfigManager:
     @icon_size.setter
     def icon_size(self, value):
         self.config["icon_size"] = max(32, min(128, int(value)))
+        self.save()
+
+    # ---- 列数 ----
+    @property
+    def columns(self):
+        return self.config.get("columns", 2)
+
+    @columns.setter
+    def columns(self, value):
+        self.config["columns"] = max(1, min(5, int(value)))
         self.save()
 
     # ---- 分组管理 ----
@@ -193,7 +204,7 @@ class ConfigManager:
                 return g
         return None
 
-    # ---- 快捷方式管理 ----
+    # ---- dokodemo ----
     def add_shortcut_to_ungrouped(self, shortcut_path, display_name):
         """添加快捷方式到未分组"""
         ungrouped = self._get_or_create_ungrouped()

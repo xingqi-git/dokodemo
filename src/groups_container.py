@@ -7,7 +7,7 @@ from .config import UNGROUPED_ID
 
 class GroupsContainer(QScrollArea):
     """
-    分组容器：两列Z型排列所有分组，支持分组间拖拽排序
+    分组容器：多列Z型排列所有分组，支持分组间拖拽排序
     未添加分组固定在第一位，不参与排序
     """
 
@@ -22,60 +22,68 @@ class GroupsContainer(QScrollArea):
         super().__init__(parent)
         self.config = config_manager
         self.group_widgets = []
+        self._columns = self.config.columns
 
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        self._container = QWidget()
-        self._layout = QGridLayout(self._container)
-        self._layout.setContentsMargins(20, 20, 20, 20)
-        self._layout.setSpacing(16)
-        self._layout.setAlignment(Qt.AlignTop)
-
-        self.setWidget(self._container)
+        self._container = None
 
         self.setAcceptDrops(True)
         self._drag_group_id = None
 
+    @property
+    def columns(self):
+        return self._columns
+
+    def set_columns(self, n):
+        """设置列数并重排分组"""
+        n = max(1, int(n))
+        if n == self._columns:
+            return
+        self._columns = n
+        self.refresh()
+
     def refresh(self):
-        """根据配置刷新所有分组（全量重建）"""
-        for gw in self.group_widgets:
-            gw.deleteLater()
+        """根据配置刷新所有分组（全量重建 container）"""
+        # 旧 container 整体删除（连带里面所有 widget 和 layout）
+        old = self._container
         self.group_widgets = []
 
-        while self._layout.count():
-            self._layout.takeAt(0)
+        # 新建 container 和 layout
+        self._container = QWidget()
+        layout = QGridLayout(self._container)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+        layout.setAlignment(Qt.AlignTop)
+        for c in range(self._columns):
+            layout.setColumnStretch(c, 1)
 
         groups = self._visible_groups()
 
         for i, g in enumerate(groups):
-            row = i // 2
-            col = i % 2
-            gw = self._create_group_widget(g)
-            self._layout.addWidget(gw, row, col)
+            row = i // self._columns
+            col = i % self._columns
+            gw = GroupWidget(
+                g["id"], g["name"],
+                g.get("color_index", 0),
+                g.get("shortcuts", []),
+                self.config.icon_size,
+                self._container
+            )
+            gw.shortcutMoved.connect(self.shortcutMoved.emit)
+            gw.shortcutLaunched.connect(self.shortcutLaunched.emit)
+            gw.groupDragStarted.connect(self._on_group_drag_started)
+            gw.groupRenamed.connect(self.groupRenamed.emit)
+            gw.groupColorChanged.connect(self.groupColorChanged.emit)
+            gw.groupDeleted.connect(self.groupDeleted.emit)
+            layout.addWidget(gw, row, col)
             self.group_widgets.append(gw)
 
-        self._layout.setColumnStretch(0, 1)
-        self._layout.setColumnStretch(1, 1)
-
-    def _create_group_widget(self, group_data):
-        """创建单个分组 widget"""
-        gw = GroupWidget(
-            group_data["id"], group_data["name"],
-            group_data.get("color_index", 0),
-            group_data.get("shortcuts", []),
-            self.config.icon_size,
-            self._container
-        )
-        gw.shortcutMoved.connect(self.shortcutMoved.emit)
-        gw.shortcutLaunched.connect(self.shortcutLaunched.emit)
-        gw.groupDragStarted.connect(self._on_group_drag_started)
-        gw.groupRenamed.connect(self.groupRenamed.emit)
-        gw.groupColorChanged.connect(self.groupColorChanged.emit)
-        gw.groupDeleted.connect(self.groupDeleted.emit)
-        return gw
+        self.setWidget(self._container)
+        # 注意：setWidget 会自动删除旧的 widget，不需要再手动 deleteLater
 
     def update_group_name(self, group_id, new_name):
         """更新分组名称"""

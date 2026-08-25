@@ -1,7 +1,7 @@
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QInputDialog, QMessageBox, QSlider, QFrame
+    QFileDialog, QInputDialog, QMessageBox, QSlider, QFrame, QApplication
 )
 from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
 from PyQt5.QtGui import QIcon, QFont
@@ -19,8 +19,11 @@ class MainWindow(QWidget):
         super().__init__()
         self.config = ConfigManager(config_path)
 
-        # 无边框
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+        # 无边框，同时保留最小化/最大化系统菜单（让任务栏图标能正常最小化）
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.Window
+            | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
+        )
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 
         # 窗口拖动
@@ -36,11 +39,7 @@ class MainWindow(QWidget):
         self.showMaximized()
         self._is_maximized = True
 
-        # 延迟加载分组内容，加快启动速度
-        QTimer.singleShot(0, self._delayed_init)
-
-    def _delayed_init(self):
-        """窗口显示后再加载分组内容"""
+        # 启动时立即加载分组内容
         if self.config.shortcut_dir:
             self.groups_container.refresh()
 
@@ -65,7 +64,7 @@ class MainWindow(QWidget):
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(0)
 
-        self.title_label = QLabel("快捷方式管理", self.title_bar)
+        self.title_label = QLabel("dokodemo", self.title_bar)
         self.title_label.setObjectName("titleLabel")
         title_layout.addWidget(self.title_label)
 
@@ -109,10 +108,10 @@ class MainWindow(QWidget):
         # 工具栏
         self.tool_bar = QWidget(self.main_widget)
         self.tool_bar.setObjectName("toolBar")
-        self.tool_bar.setFixedHeight(52)
+        self.tool_bar.setFixedHeight(40)
         tool_layout = QHBoxLayout(self.tool_bar)
-        tool_layout.setContentsMargins(16, 8, 16, 8)
-        tool_layout.setSpacing(12)
+        tool_layout.setContentsMargins(16, 4, 16, 4)
+        tool_layout.setSpacing(8)
 
         # 选择目录按钮
         self.dir_btn = QPushButton("选择目录", self.tool_bar)
@@ -123,10 +122,10 @@ class MainWindow(QWidget):
         # 当前目录显示
         self.dir_label = QLabel("未设置快捷方式目录", self.tool_bar)
         self.dir_label.setStyleSheet("color: #666; font-size: 12px;")
-        self.dir_label.setMinimumWidth(200)
+        self.dir_label.setMinimumWidth(180)
         tool_layout.addWidget(self.dir_label)
 
-        tool_layout.addSpacing(20)
+        tool_layout.addSpacing(12)
 
         # 刷新按钮
         self.refresh_btn = QPushButton("刷新", self.tool_bar)
@@ -151,14 +150,35 @@ class MainWindow(QWidget):
         self.size_slider.setMinimum(32)
         self.size_slider.setMaximum(128)
         self.size_slider.setValue(self.config.icon_size)
-        self.size_slider.setFixedWidth(150)
+        self.size_slider.setFixedWidth(120)
         self.size_slider.setCursor(Qt.PointingHandCursor)
         tool_layout.addWidget(self.size_slider)
 
         self.size_value_label = QLabel(f"{self.config.icon_size}px", self.tool_bar)
         self.size_value_label.setObjectName("sliderLabel")
-        self.size_value_label.setFixedWidth(40)
+        self.size_value_label.setFixedWidth(36)
         tool_layout.addWidget(self.size_value_label)
+
+        tool_layout.addSpacing(12)
+
+        # 列数调节
+        col_label = QLabel("列数:", self.tool_bar)
+        col_label.setObjectName("sliderLabel")
+        tool_layout.addWidget(col_label)
+
+        self.col_slider = QSlider(Qt.Horizontal, self.tool_bar)
+        self.col_slider.setMinimum(1)
+        self.col_slider.setMaximum(5)
+        self.col_slider.setValue(self.config.columns)
+        self.col_slider.setFixedWidth(80)
+        self.col_slider.setCursor(Qt.PointingHandCursor)
+        self.col_slider.setPageStep(1)  # 点击轨道时 +1 / -1，而不是跳一大段
+        tool_layout.addWidget(self.col_slider)
+
+        self.col_value_label = QLabel(f"{self.config.columns}", self.tool_bar)
+        self.col_value_label.setObjectName("sliderLabel")
+        self.col_value_label.setFixedWidth(20)
+        tool_layout.addWidget(self.col_value_label)
 
         main_layout.addWidget(self.tool_bar)
 
@@ -185,6 +205,10 @@ class MainWindow(QWidget):
         # 图标大小滑块
         self.size_slider.valueChanged.connect(self._on_icon_size_changed)
         self.size_slider.sliderReleased.connect(self._on_icon_size_released)
+
+        # 列数滑块
+        self.col_slider.valueChanged.connect(self._on_columns_changed)
+        self.col_slider.sliderReleased.connect(self._on_columns_released)
 
         # 分组容器信号
         self.groups_container.shortcutMoved.connect(self._on_shortcut_moved)
@@ -230,8 +254,13 @@ class MainWindow(QWidget):
     def _toggle_maximize(self):
         if self._is_maximized:
             self.showNormal()
-            if self._normal_geometry:
-                self.setGeometry(self._normal_geometry)
+            # 计算还原尺寸：宽度 1/2 屏幕，高度 2/3 屏幕，居中显示
+            screen = QApplication.primaryScreen().availableGeometry()
+            width = screen.width() // 2
+            height = screen.height() * 2 // 3
+            x = screen.x() + (screen.width() - width) // 2
+            y = screen.y() + (screen.height() - height) // 2
+            self.setGeometry(x, y, width, height)
             self.max_btn.setText("□")
             self._is_maximized = False
         else:
@@ -321,3 +350,15 @@ class MainWindow(QWidget):
         self.config.icon_size = value
         clear_icon_cache()
         self.groups_container.refresh()
+
+    def _on_columns_changed(self, value):
+        self.col_value_label.setText(str(value))
+        # 鼠标拖动时不刷新（松开再刷），键盘/点击操作立即刷新
+        if not self.col_slider.isSliderDown():
+            self.config.columns = value
+            self.groups_container.set_columns(value)
+
+    def _on_columns_released(self):
+        value = self.col_slider.value()
+        self.config.columns = value
+        self.groups_container.set_columns(value)
