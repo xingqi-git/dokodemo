@@ -1,0 +1,109 @@
+{
+  "shortcut_dir": "C:/Users/xingq/Desktop/程序",
+  "icon_size": 75,
+  "groups": [
+    {
+      "id": "ungrouped",
+      "name": "未添加分组",
+      "color_index": 7,
+      "shortcuts": [
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\Clash Verge.lnk",
+          "name": "Clash Verge"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\EASTCOM TCPS_双模.lnk",
+          "name": "EASTCOM TCPS_双模"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\GitHub.lnk",
+          "name": "GitHub"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\HandsFree.lnk",
+          "name": "HandsFree"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\HiBitUninstaller.lnk",
+          "name": "HiBitUninstaller"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\MobaXterm.lnk",
+          "name": "MobaXterm"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\Notepad++.lnk",
+          "name": "Notepad++"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\OneClick.lnk",
+          "name": "OneClick"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\painting.lnk",
+          "name": "painting"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\PyCharm.lnk",
+          "name": "PyCharm"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\remote.lnk",
+          "name": "remote"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\SecureCRT.lnk",
+          "name": "SecureCRT"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\TCps.lnk",
+          "name": "TCps"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\Visio 2013.lnk",
+          "name": "Visio 2013"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\VMware.lnk",
+          "name": "VMware"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\WinSCP.lnk",
+          "name": "WinSCP"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\Wireshark.lnk",
+          "name": "Wireshark"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\XMind 2021.lnk",
+          "name": "XMind 2021"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\XMind 8.lnk",
+          "name": "XMind 8"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\XQ.lnk",
+          "name": "XQ"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\向日葵.lnk",
+          "name": "向日葵"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\网络连接.lnk",
+          "name": "网络连接"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\计算器.lnk",
+          "name": "计算器"
+        },
+        {
+          "path": "C:/Users/xingq/Desktop/程序\\金蝶.lnk",
+          "name": "金蝶"
+        }
+      ]
+    }
+  ]
+}
