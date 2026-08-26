@@ -18,7 +18,6 @@ _set_app_id()
 
 from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
 from PyQt5.QtGui import QFont
-from PyQt5.QtCore import Qt
 from PyQt5.QtNetwork import QLocalServer, QLocalSocket
 
 from src.main_window import MainWindow

@@ -8,7 +8,6 @@ from .shortcut import get_shortcut_icon, launch_shortcut
 class ShortcutItem(QWidget):
     """单个快捷方式项：图标 + 两行名称，支持单击启动和拖拽"""
 
-    dragStarted = pyqtSignal(str, int)  # group_id, index
     shortcutLaunched = pyqtSignal()  # 快捷方式被点击启动
 
     def __init__(self, shortcut_path, display_name, icon_size=64, group_id="", index=0, parent=None):
@@ -181,7 +180,6 @@ class ShortcutItem(QWidget):
             drag.setPixmap(pixmap)
             drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
 
-            self.dragStarted.emit(self.group_id, self.index)
             drag.exec_(Qt.MoveAction)
         except Exception as e:
             import traceback

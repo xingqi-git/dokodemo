@@ -146,14 +146,6 @@ class ConfigManager:
                 return g
         return None
 
-    def get_group_color(self, group_id):
-        """获取分组的配色字典"""
-        group = self.get_group(group_id)
-        if group:
-            idx = group.get("color_index", 0)
-            return PRESET_COLORS[idx % len(PRESET_COLORS)]
-        return PRESET_COLORS[0]
-
     def move_group(self, from_index, to_index):
         """移动分组顺序（未分组固定在第一位，不参与移动）"""
         groups = self.config["groups"]
@@ -197,34 +189,7 @@ class ConfigManager:
         self.config["groups"].insert(0, ungrouped)
         return ungrouped
 
-    def get_ungrouped(self):
-        """获取未分组，不存在返回None"""
-        for g in self.config["groups"]:
-            if g["id"] == UNGROUPED_ID:
-                return g
-        return None
-
     # ---- dokodemo ----
-    def add_shortcut_to_ungrouped(self, shortcut_path, display_name):
-        """添加快捷方式到未分组"""
-        ungrouped = self._get_or_create_ungrouped()
-        # 避免重复
-        for s in ungrouped["shortcuts"]:
-            if s["path"] == shortcut_path:
-                return
-        ungrouped["shortcuts"].append({
-            "path": shortcut_path,
-            "name": display_name
-        })
-        self.save()
-
-    def remove_shortcut(self, group_id, shortcut_path):
-        """从分组中移除快捷方式"""
-        group = self.get_group(group_id)
-        if group:
-            group["shortcuts"] = [s for s in group["shortcuts"] if s["path"] != shortcut_path]
-            self.save()
-
     def move_shortcut(self, from_group_id, from_index, to_group_id, to_index):
         """移动快捷方式（可跨分组）"""
         from_group = self.get_group(from_group_id)
@@ -239,23 +204,6 @@ class ConfigManager:
         if to_index < 0 or to_index > len(to_shortcuts):
             to_index = len(to_shortcuts)
         to_shortcuts.insert(to_index, item)
-        self.save()
-
-    def reorder_shortcuts_in_group(self, group_id, shortcut_paths):
-        """按给定路径列表重排分组内的快捷方式"""
-        group = self.get_group(group_id)
-        if not group:
-            return
-        existing = {s["path"]: s for s in group["shortcuts"]}
-        new_list = []
-        for path in shortcut_paths:
-            if path in existing:
-                new_list.append(existing[path])
-        # 把没在列表里的补到后面
-        for s in group["shortcuts"]:
-            if s["path"] not in set(shortcut_paths):
-                new_list.append(s)
-        group["shortcuts"] = new_list
         self.save()
 
     def sync_shortcuts(self, shortcut_paths_with_names):

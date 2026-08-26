@@ -1,10 +1,9 @@
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QInputDialog, QMessageBox, QSlider, QFrame, QApplication
+    QFileDialog, QInputDialog, QMessageBox, QSlider, QApplication
 )
-from PyQt5.QtCore import Qt, QPoint, QSize, QTimer
-from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtCore import Qt, QPoint, QTimer
 
 from .config import ConfigManager, UNGROUPED_ID
 from .shortcut import scan_shortcuts, clear_icon_cache
@@ -29,7 +28,6 @@ class MainWindow(QWidget):
         # 窗口拖动
         self._drag_pos = None
         self._is_maximized = False
-        self._normal_geometry = None
 
         self._init_ui()
         self._connect_signals()
@@ -264,7 +262,6 @@ class MainWindow(QWidget):
             self.max_btn.setText("□")
             self._is_maximized = False
         else:
-            self._normal_geometry = self.geometry()
             self.showMaximized()
             self.max_btn.setText("❐")
             self._is_maximized = True

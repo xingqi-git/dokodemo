@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QLayout, QSizePolicy
+from PyQt5.QtWidgets import QLayout
 from PyQt5.QtCore import Qt, QRect, QSize, QPoint
 
 
@@ -34,16 +34,6 @@ class FlowLayout(QLayout):
         if 0 <= index < len(self._items):
             return self._items.pop(index)
         return None
-
-    def insertWidget(self, index, widget):
-        """在指定位置插入 widget"""
-        from PyQt5.QtWidgets import QWidgetItem
-        item = QWidgetItem(widget)
-        if index < 0 or index >= len(self._items):
-            self._items.append(item)
-        else:
-            self._items.insert(index, item)
-        self.update()
 
     def expandingDirections(self):
         return Qt.Orientations(Qt.Orientation(0))

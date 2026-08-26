@@ -35,10 +35,6 @@ QPushButton#titleBtn:hover {
     background-color: rgba(255, 255, 255, 30);
 }
 
-QPushButton#closeBtn:hover {
-    background-color: #E74C3C;
-}
-
 /* 工具栏 */
 QWidget#toolBar {
     background-color: #FFFFFF;
