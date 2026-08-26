@@ -216,30 +216,64 @@ class GroupWidget(QFrame):
         super().dragLeaveEvent(event)
 
     def _calc_drop_index(self, pos):
-        """根据鼠标位置计算插入索引（基于实际 widget 位置）"""
-        if not self.shortcuts:
+        """根据鼠标位置计算插入索引（先找行，再在行内找位置）"""
+        count = self.flow_layout.count()
+        if count == 0:
             return 0
 
         flow_pos = self.flow_widget.mapFrom(self, pos)
 
-        for i in range(self.flow_layout.count()):
+        # 第一步：按行分组
+        rows = []  # [(start_idx, end_idx, top, bottom)]
+        current_row_top = None
+        current_row_bottom = None
+        row_start = 0
+
+        for i in range(count):
             item = self.flow_layout.itemAt(i)
             if not item:
                 continue
             geom = item.geometry()
-            if geom.top() <= flow_pos.y() <= geom.bottom():
+            if current_row_top is None:
+                current_row_top = geom.top()
+                current_row_bottom = geom.bottom()
+                row_start = i
+            elif geom.top() > current_row_bottom + 2:
+                # 新行（间距超过 2px 视为换行）
+                rows.append((row_start, i - 1, current_row_top, current_row_bottom))
+                current_row_top = geom.top()
+                current_row_bottom = geom.bottom()
+                row_start = i
+            else:
+                current_row_bottom = max(current_row_bottom, geom.bottom())
+        rows.append((row_start, count - 1, current_row_top, current_row_bottom))
+
+        # 第二步：找到鼠标所在的行（或最近的行）
+        target_row_idx = 0
+        for i, (_, _, top, bottom) in enumerate(rows):
+            if flow_pos.y() <= bottom:
+                target_row_idx = i
+                break
+            target_row_idx = i  # 默认最后一行
+
+        row_start, row_end, row_top, row_bottom = rows[target_row_idx]
+
+        # 第三步：在目标行内，根据 x 位置找插入点
+        # 行上方空白 → 插到行首
+        if flow_pos.y() < row_top:
+            return row_start
+        # 行内 → 按 x 中心点判断
+        if flow_pos.y() <= row_bottom:
+            for i in range(row_start, row_end + 1):
+                item = self.flow_layout.itemAt(i)
+                if not item:
+                    continue
+                geom = item.geometry()
                 if flow_pos.x() < geom.center().x():
                     return i
-                else:
-                    return i + 1
-            if geom.top() <= flow_pos.y() and flow_pos.y() > geom.bottom():
-                if i == self.flow_layout.count() - 1:
-                    return i + 1
-                next_item = self.flow_layout.itemAt(i + 1)
-                if next_item and next_item.geometry().top() > geom.bottom():
-                    return i + 1
-
-        return len(self.shortcuts)
+            return row_end + 1
+        # 行下方空白 → 插到行尾
+        return row_end + 1
 
     def paintEvent(self, event):
         """绘制拖拽插入指示线"""
