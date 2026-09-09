@@ -1,14 +1,15 @@
-from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
+from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout, QMenu, QAction, QInputDialog, QMessageBox
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QFontMetrics, QDrag, QColor, QBrush
 
-from .shortcut import get_shortcut_icon, launch_shortcut
+from .shortcut import get_shortcut_icon, launch_shortcut, open_shortcut_location, rename_shortcut
 
 
 class ShortcutItem(QWidget):
     """单个快捷方式项：图标 + 两行名称，支持单击启动和拖拽"""
 
     shortcutLaunched = pyqtSignal()  # 快捷方式被点击启动
+    shortcutRenamed = pyqtSignal(str, str)  # old_path, new_path
 
     def __init__(self, shortcut_path, display_name, icon_size=64, group_id="", index=0, parent=None):
         super().__init__(parent)
@@ -203,3 +204,46 @@ class ShortcutItem(QWidget):
             }
         """)
         super().leaveEvent(event)
+
+    def contextMenuEvent(self, event):
+        """右键菜单：打开所在位置、重命名"""
+        menu = QMenu(self)
+
+        open_location_action = QAction("打开所在位置", self)
+        open_location_action.triggered.connect(self._on_open_location)
+        menu.addAction(open_location_action)
+
+        menu.addSeparator()
+
+        rename_action = QAction("重命名", self)
+        rename_action.triggered.connect(self._on_rename)
+        menu.addAction(rename_action)
+
+        menu.exec_(event.globalPos())
+
+    def _on_open_location(self):
+        open_shortcut_location(self.shortcut_path)
+
+    def _on_rename(self):
+        new_name, ok = QInputDialog.getText(
+            self, "重命名快捷方式", "请输入新的名称:",
+            text=self.display_name
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            QMessageBox.warning(self, "提示", "名称不能为空")
+            return
+        if new_name == self.display_name:
+            return
+        new_path = rename_shortcut(self.shortcut_path, new_name)
+        if new_path:
+            old_path = self.shortcut_path
+            self.shortcut_path = new_path
+            self.display_name = new_name
+            self._update_name()
+            self.setToolTip(new_name)
+            self.shortcutRenamed.emit(old_path, new_path)
+        else:
+            QMessageBox.warning(self, "提示", "重命名失败，可能名称已存在或不合法")

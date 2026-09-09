@@ -10,6 +10,33 @@ _icon_cache = {}
 # 全局复用 QFileIconProvider，避免重复创建
 _icon_provider = None
 
+# 预检测可用的 lnk 解析方式，避免每次调用都重复 try/except
+_pylnk3_available = None
+_pywin32_available = None
+
+
+def _check_pylnk3():
+    global _pylnk3_available
+    if _pylnk3_available is None:
+        try:
+            import pylnk3  # noqa: F401
+            _pylnk3_available = True
+        except ImportError:
+            _pylnk3_available = False
+    return _pylnk3_available
+
+
+def _check_pywin32():
+    global _pywin32_available
+    if _pywin32_available is None:
+        try:
+            import pythoncom  # noqa: F401
+            from win32com.shell import shell  # noqa: F401
+            _pywin32_available = True
+        except ImportError:
+            _pywin32_available = False
+    return _pywin32_available
+
 
 def _get_icon_provider():
     global _icon_provider
@@ -176,33 +203,35 @@ def _crop_and_fill(pixmap, size):
 def _resolve_lnk_target(lnk_path):
     """解析 .lnk 快捷方式的目标路径（带缓存）"""
     # 方法1：pylnk3（轻量级，优先使用）
-    try:
-        import pylnk3
-        target = pylnk3.parse(lnk_path).path
-        if target and os.path.exists(target):
-            return target
-    except (ImportError, Exception):
-        pass
-
-    # 方法2：pywin32（更可靠，但更重）
-    try:
-        import pythoncom
-        from win32com.shell import shell
-
-        pythoncom.CoInitialize()
+    if _check_pylnk3():
         try:
-            link = pythoncom.CoCreateInstance(
-                shell.CLSID_ShellLink, None,
-                pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
-            )
-            link.QueryInterface(pythoncom.IID_IPersistFile).Load(lnk_path)
-            target, _ = link.GetPath(0)
+            import pylnk3
+            target = pylnk3.parse(lnk_path).path
             if target and os.path.exists(target):
                 return target
-        finally:
-            pythoncom.CoUninitialize()
-    except (ImportError, Exception):
-        pass
+        except Exception:
+            pass
+
+    # 方法2：pywin32（更可靠）
+    if _check_pywin32():
+        try:
+            import pythoncom
+            from win32com.shell import shell
+
+            pythoncom.CoInitialize()
+            try:
+                link = pythoncom.CoCreateInstance(
+                    shell.CLSID_ShellLink, None,
+                    pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
+                )
+                link.QueryInterface(pythoncom.IID_IPersistFile).Load(lnk_path)
+                target, _ = link.GetPath(0)
+                if target and os.path.exists(target):
+                    return target
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception:
+            pass
 
     return None
 
@@ -237,3 +266,141 @@ def launch_shortcut(path):
     except Exception as e:
         print(f"启动快捷方式失败: {e}")
         return False
+
+
+def open_shortcut_location(lnk_path):
+    """
+    打开快捷方式指向的目标文件所在位置（在资源管理器中选中）
+    如果无法解析目标，则打开 .lnk 文件所在目录并选中 .lnk
+    使用 SHOpenFolderAndSelectItems API，比启动 explorer 进程更快
+    """
+    try:
+        target = _resolve_lnk_target(lnk_path)
+        open_path = target if target else lnk_path
+        if os.name == "nt":
+            return _open_and_select_in_explorer(open_path)
+        else:
+            # 非 Windows：打开所在目录
+            dir_path = os.path.dirname(open_path)
+            from PyQt5.QtGui import QDesktopServices
+            from PyQt5.QtCore import QUrl
+            return QDesktopServices.openUrl(QUrl.fromLocalFile(dir_path))
+    except Exception as e:
+        print(f"打开所在位置失败: {e}")
+        return False
+
+
+def _open_and_select_in_explorer(file_path):
+    """
+    在资源管理器中打开并选中文件。
+    使用 Windows API SHOpenFolderAndSelectItems（通过 ctypes 调用，正确声明 64 位指针），
+    复用已有 explorer 窗口，比启动新的 explorer 进程快很多。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        shell32 = ctypes.windll.shell32
+        ole32 = ctypes.windll.ole32
+
+        # 关键：正确声明 PIDL 相关函数的返回类型为指针
+        # （64 位系统上 ctypes 默认返回 c_int，指针会被截断导致失效）
+        shell32.ILCreateFromPathW.restype = wintypes.LPCVOID
+        shell32.ILClone.restype = wintypes.LPCVOID
+        shell32.ILFindLastID.restype = wintypes.LPCVOID
+        shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+        shell32.ILFree.argtypes = [wintypes.LPCVOID]
+        shell32.ILRemoveLastID.argtypes = [wintypes.LPCVOID]
+        shell32.ILRemoveLastID.restype = wintypes.BOOL
+
+        # 初始化 COM
+        ole32.CoInitializeEx(None, 0)  # COINIT_APARTMENTTHREADED
+
+        # 1. 获取完整路径的绝对 PIDL
+        pidl_full = shell32.ILCreateFromPathW(file_path)
+        if not pidl_full:
+            ole32.CoUninitialize()
+            raise RuntimeError("ILCreateFromPathW failed")
+
+        try:
+            # 2. 获取父文件夹 PIDL：克隆完整 PIDL 后移除最后一项
+            parent_pidl = shell32.ILClone(pidl_full)
+            if not parent_pidl or not shell32.ILRemoveLastID(parent_pidl):
+                if parent_pidl:
+                    shell32.ILFree(parent_pidl)
+                raise RuntimeError("failed to get parent pidl")
+
+            # 3. 获取最后一项（相对父文件夹的 PIDL）
+            child_pidl = shell32.ILFindLastID(pidl_full)
+            if not child_pidl:
+                shell32.ILFree(parent_pidl)
+                raise RuntimeError("ILFindLastID failed")
+
+            # 4. 构造子项 PIDL 数组
+            pidl_array = (wintypes.LPCVOID * 1)()
+            pidl_array[0] = child_pidl
+
+            # 5. 调用 SHOpenFolderAndSelectItems
+            hr = shell32.SHOpenFolderAndSelectItems(
+                parent_pidl,  # pidlFolder
+                1,            # cidl
+                pidl_array,   # apidl
+                0             # dwFlags
+            )
+
+            shell32.ILFree(parent_pidl)
+            ole32.CoUninitialize()
+
+            if hr == 0:  # S_OK
+                return True
+            else:
+                raise RuntimeError(
+                    f"SHOpenFolderAndSelectItems returned 0x{hr & 0xFFFFFFFF:08X}"
+                )
+
+        finally:
+            try:
+                shell32.ILFree(pidl_full)
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"_open_and_select_in_explorer 异常: {e}")
+
+    # 兜底：subprocess 启动 explorer
+    try:
+        import subprocess
+        subprocess.Popen(f'explorer /select,"{file_path}"', shell=True)
+        return True
+    except Exception as e:
+        print(f"打开所在位置失败: {e}")
+        return False
+
+
+def rename_shortcut(lnk_path, new_name):
+    """
+    重命名快捷方式文件（不修改目标，仅修改 .lnk 文件名）
+    new_name 不需要带 .lnk 后缀
+    成功返回新的完整路径，失败返回 None
+    """
+    try:
+        if not os.path.isfile(lnk_path):
+            return None
+        dir_path = os.path.dirname(lnk_path)
+        old_name = os.path.basename(lnk_path)
+        # 确保新名不带 .lnk
+        base_new = os.path.splitext(new_name)[0]
+        if not base_new.strip():
+            return None
+        new_filename = base_new + ".lnk"
+        new_path = os.path.join(dir_path, new_filename)
+        if old_name.lower() == new_filename.lower():
+            return lnk_path  # 大小写相同不改名
+        if os.path.exists(new_path):
+            return None  # 已存在，不覆盖
+        os.rename(lnk_path, new_path)
+        clear_icon_cache()
+        return new_path
+    except Exception as e:
+        print(f"重命名快捷方式失败: {e}")
+        return None

@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QInputDialog, QMessageBox, QSlider, QApplication
 )
 from PyQt5.QtCore import Qt, QPoint, QTimer
+from PyQt5.QtGui import QKeyEvent
 
 from .config import ConfigManager, UNGROUPED_ID
 from .shortcut import scan_shortcuts, clear_icon_cache
@@ -214,6 +215,9 @@ class MainWindow(QWidget):
         self.groups_container.groupRenamed.connect(self._on_group_renamed)
         self.groups_container.groupColorChanged.connect(self._on_group_color_changed)
         self.groups_container.groupDeleted.connect(self._on_group_deleted)
+        self.groups_container.shortcutRenamed.connect(self._on_shortcut_renamed)
+        # 点击空白区域关闭窗口（隐藏到托盘）
+        self.groups_container.blankClicked.connect(self.close)
 
     # ---- 标题栏拖动 ----
     def mousePressEvent(self, event):
@@ -248,6 +252,12 @@ class MainWindow(QWidget):
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
     def _toggle_maximize(self):
         if self._is_maximized:
@@ -320,6 +330,20 @@ class MainWindow(QWidget):
         self.config.move_shortcut(from_group, from_idx, to_group, to_idx)
         # 延迟刷新，确保拖拽完全结束后再重建 widget，避免崩溃
         QTimer.singleShot(50, self.groups_container.refresh)
+
+    def _on_shortcut_renamed(self, group_id, old_path, new_path):
+        """快捷方式文件重命名后，更新配置中的 path 和 name"""
+        import os
+        new_name = os.path.splitext(os.path.basename(new_path))[0]
+        renamed = False
+        for g in self.config.groups:
+            for sc in g.get("shortcuts", []):
+                if sc["path"] == old_path:
+                    sc["path"] = new_path
+                    sc["name"] = new_name
+                    renamed = True
+        if renamed:
+            self.config.save()
 
     def _on_group_moved(self, from_idx, to_idx):
         self.config.move_group(from_idx, to_idx)

@@ -13,10 +13,12 @@ class GroupsContainer(QScrollArea):
 
     shortcutMoved = pyqtSignal(str, int, str, int)
     shortcutLaunched = pyqtSignal()
+    shortcutRenamed = pyqtSignal(str, str, str)  # group_id, old_path, new_path
     groupMoved = pyqtSignal(int, int)  # from_index, to_index（仅自定义分组之间）
     groupRenamed = pyqtSignal(str, str)
     groupColorChanged = pyqtSignal(str, int)
     groupDeleted = pyqtSignal(str)
+    blankClicked = pyqtSignal()  # 空白区域点击
 
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
@@ -54,6 +56,7 @@ class GroupsContainer(QScrollArea):
 
         # 新建 container 和 layout
         self._container = QWidget()
+        self._container.installEventFilter(self)
         layout = QGridLayout(self._container)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
@@ -75,6 +78,7 @@ class GroupsContainer(QScrollArea):
             )
             gw.shortcutMoved.connect(self.shortcutMoved.emit)
             gw.shortcutLaunched.connect(self.shortcutLaunched.emit)
+            gw.shortcutRenamed.connect(self.shortcutRenamed.emit)
             gw.groupDragStarted.connect(self._on_group_drag_started)
             gw.groupRenamed.connect(self.groupRenamed.emit)
             gw.groupColorChanged.connect(self.groupColorChanged.emit)
@@ -84,6 +88,15 @@ class GroupsContainer(QScrollArea):
 
         self.setWidget(self._container)
         # 注意：setWidget 会自动删除旧的 widget，不需要再手动 deleteLater
+
+    def eventFilter(self, obj, event):
+        if obj is self._container and event.type() == event.MouseButtonPress:
+            if event.button() == Qt.LeftButton:
+                # 判断点击位置是否在子控件上，不在则视为空白区域
+                child = self._container.childAt(event.pos())
+                if child is None:
+                    self.blankClicked.emit()
+        return super().eventFilter(obj, event)
 
     def update_group_name(self, group_id, new_name):
         """更新分组名称"""
