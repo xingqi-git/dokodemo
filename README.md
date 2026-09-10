@@ -47,7 +47,7 @@ python main.py
 ### 打包为 exe
 
 ```bash
-pyinstaller --noconsole --icon=app.ico --name=dokodemo --additional-hooks-dir=hooks --hidden-import=pkgutil main.py
+pyinstaller --noconsole --icon=app.ico --name=dokodemo --additional-hooks-dir=hooks main.py
 ```
 
 ---

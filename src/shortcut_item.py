@@ -9,7 +9,7 @@ class ShortcutItem(QWidget):
     """单个快捷方式项：图标 + 两行名称，支持单击启动和拖拽"""
 
     shortcutLaunched = pyqtSignal()  # 快捷方式被点击启动
-    shortcutRenamed = pyqtSignal(str, str)  # old_path, new_path
+    shortcutRenamed = pyqtSignal(str, str, str)  # old_path, new_path, new_name
 
     def __init__(self, shortcut_path, display_name, icon_size=64, group_id="", index=0, parent=None):
         super().__init__(parent)
@@ -244,6 +244,6 @@ class ShortcutItem(QWidget):
             self.display_name = new_name
             self._update_name()
             self.setToolTip(new_name)
-            self.shortcutRenamed.emit(old_path, new_path)
+            self.shortcutRenamed.emit(old_path, new_path, new_name)
         else:
             QMessageBox.warning(self, "提示", "重命名失败，可能名称已存在或不合法")

@@ -4,7 +4,6 @@ from PyQt5.QtWidgets import (
     QFileDialog, QInputDialog, QMessageBox, QSlider, QApplication
 )
 from PyQt5.QtCore import Qt, QPoint, QTimer
-from PyQt5.QtGui import QKeyEvent
 
 from .config import ConfigManager, UNGROUPED_ID
 from .shortcut import scan_shortcuts, clear_icon_cache
@@ -331,10 +330,8 @@ class MainWindow(QWidget):
         # 延迟刷新，确保拖拽完全结束后再重建 widget，避免崩溃
         QTimer.singleShot(50, self.groups_container.refresh)
 
-    def _on_shortcut_renamed(self, group_id, old_path, new_path):
+    def _on_shortcut_renamed(self, group_id, old_path, new_path, new_name):
         """快捷方式文件重命名后，更新配置中的 path 和 name"""
-        import os
-        new_name = os.path.splitext(os.path.basename(new_path))[0]
         renamed = False
         for g in self.config.groups:
             for sc in g.get("shortcuts", []):

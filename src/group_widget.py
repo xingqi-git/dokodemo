@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QMenu, QAction, QInputDialog, QFrame
+    QMenu, QAction, QInputDialog, QFrame, QMessageBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QMimeData, QPoint
 from PyQt5.QtGui import QDrag, QFont, QPainter, QColor
@@ -18,7 +18,7 @@ class GroupWidget(QFrame):
 
     shortcutMoved = pyqtSignal(str, int, str, int)  # from_group, from_idx, to_group, to_idx
     shortcutLaunched = pyqtSignal()  # 组内快捷方式被启动
-    shortcutRenamed = pyqtSignal(str, str, str)  # group_id, old_path, new_path
+    shortcutRenamed = pyqtSignal(str, str, str, str)  # group_id, old_path, new_path, new_name
     groupDragStarted = pyqtSignal(str)  # group_id
     groupRenamed = pyqtSignal(str, str)  # group_id, new_name
     groupColorChanged = pyqtSignal(str, int)  # group_id, color_index
@@ -120,17 +120,15 @@ class GroupWidget(QFrame):
 
         self.count_label.setText(f"{len(self.shortcuts)} 项")
 
-    def _on_shortcut_renamed(self, old_path, new_path):
+    def _on_shortcut_renamed(self, old_path, new_path, new_name):
         """快捷方式重命名后，更新本地数据并向上传递"""
         # 更新本地 shortcuts 数据中的路径和名称
-        import os
-        new_name = os.path.splitext(os.path.basename(new_path))[0]
         for sc in self.shortcuts:
             if sc["path"] == old_path:
                 sc["path"] = new_path
                 sc["name"] = new_name
                 break
-        self.shortcutRenamed.emit(self.group_id, old_path, new_path)
+        self.shortcutRenamed.emit(self.group_id, old_path, new_path, new_name)
 
     def update_icon_size(self, size):
         """更新图标大小"""

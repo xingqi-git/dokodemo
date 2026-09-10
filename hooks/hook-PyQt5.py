@@ -33,9 +33,23 @@ for plugin_type, files in plugins.items():
                 binaries.append((src, os.path.join("PyQt5", "Qt5", "plugins", plugin_type)))
 
 # Qt 运行时 DLL
-for dll in ["Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll"]:
+for dll in [
+    "Qt5Core.dll",
+    "Qt5Gui.dll",
+    "Qt5Widgets.dll",
+    "Qt5Network.dll",
+]:
     src = os.path.join(_bin_dir, dll)
     if os.path.isfile(src):
         binaries.append((src, "."))
 
-hiddenimports = ["PyQt5.QtCore", "PyQt5.QtGui", "PyQt5.QtWidgets"]
+# 注意：PyQt5.sip 必须加，否则运行时找不到 sip 模块
+# pkgutil 也必须加，PyQt5.__init__.py 里会用到
+hiddenimports = [
+    "PyQt5.QtCore",
+    "PyQt5.QtGui",
+    "PyQt5.QtWidgets",
+    "PyQt5.QtNetwork",
+    "PyQt5.sip",
+    "pkgutil",
+]

@@ -1,7 +1,7 @@
 import os
 from functools import lru_cache
 from PyQt5.QtGui import QPixmap, QPainter, QColor, QBrush
-from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtCore import QSize, Qt, QFileInfo
 from PyQt5.QtWidgets import QFileIconProvider
 
 # 全局图标缓存，避免重复提取
@@ -9,33 +9,6 @@ _icon_cache = {}
 
 # 全局复用 QFileIconProvider，避免重复创建
 _icon_provider = None
-
-# 预检测可用的 lnk 解析方式，避免每次调用都重复 try/except
-_pylnk3_available = None
-_pywin32_available = None
-
-
-def _check_pylnk3():
-    global _pylnk3_available
-    if _pylnk3_available is None:
-        try:
-            import pylnk3  # noqa: F401
-            _pylnk3_available = True
-        except ImportError:
-            _pylnk3_available = False
-    return _pylnk3_available
-
-
-def _check_pywin32():
-    global _pywin32_available
-    if _pywin32_available is None:
-        try:
-            import pythoncom  # noqa: F401
-            from win32com.shell import shell  # noqa: F401
-            _pywin32_available = True
-        except ImportError:
-            _pywin32_available = False
-    return _pywin32_available
 
 
 def _get_icon_provider():
@@ -84,7 +57,6 @@ def _extract_icon(path, size):
     """提取快捷方式目标文件的图标（不带箭头）"""
     target_path = _resolve_lnk_target(path)
     provider = _get_icon_provider()
-    from PyQt5.QtCore import QFileInfo
 
     # 优先提取目标文件图标（不带箭头）
     if target_path and os.path.exists(target_path):
@@ -202,37 +174,13 @@ def _crop_and_fill(pixmap, size):
 @lru_cache(maxsize=512)
 def _resolve_lnk_target(lnk_path):
     """解析 .lnk 快捷方式的目标路径（带缓存）"""
-    # 方法1：pylnk3（轻量级，优先使用）
-    if _check_pylnk3():
-        try:
-            import pylnk3
-            target = pylnk3.parse(lnk_path).path
-            if target and os.path.exists(target):
-                return target
-        except Exception:
-            pass
-
-    # 方法2：pywin32（更可靠）
-    if _check_pywin32():
-        try:
-            import pythoncom
-            from win32com.shell import shell
-
-            pythoncom.CoInitialize()
-            try:
-                link = pythoncom.CoCreateInstance(
-                    shell.CLSID_ShellLink, None,
-                    pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink
-                )
-                link.QueryInterface(pythoncom.IID_IPersistFile).Load(lnk_path)
-                target, _ = link.GetPath(0)
-                if target and os.path.exists(target):
-                    return target
-            finally:
-                pythoncom.CoUninitialize()
-        except Exception:
-            pass
-
+    try:
+        import pylnk3
+        target = pylnk3.parse(lnk_path).path
+        if target and os.path.exists(target):
+            return target
+    except Exception:
+        pass
     return None
 
 
@@ -256,13 +204,8 @@ def _get_default_icon(size):
 def launch_shortcut(path):
     """启动快捷方式（等同于资源管理器双击）"""
     try:
-        if os.name == "nt":
-            os.startfile(path)
-            return True
-        else:
-            from PyQt5.QtGui import QDesktopServices
-            from PyQt5.QtCore import QUrl
-            return QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        os.startfile(path)
+        return True
     except Exception as e:
         print(f"启动快捷方式失败: {e}")
         return False
@@ -277,14 +220,7 @@ def open_shortcut_location(lnk_path):
     try:
         target = _resolve_lnk_target(lnk_path)
         open_path = target if target else lnk_path
-        if os.name == "nt":
-            return _open_and_select_in_explorer(open_path)
-        else:
-            # 非 Windows：打开所在目录
-            dir_path = os.path.dirname(open_path)
-            from PyQt5.QtGui import QDesktopServices
-            from PyQt5.QtCore import QUrl
-            return QDesktopServices.openUrl(QUrl.fromLocalFile(dir_path))
+        return _open_and_select_in_explorer(open_path)
     except Exception as e:
         print(f"打开所在位置失败: {e}")
         return False
@@ -301,7 +237,6 @@ def _open_and_select_in_explorer(file_path):
         from ctypes import wintypes
 
         shell32 = ctypes.windll.shell32
-        ole32 = ctypes.windll.ole32
 
         # 关键：正确声明 PIDL 相关函数的返回类型为指针
         # （64 位系统上 ctypes 默认返回 c_int，指针会被截断导致失效）
@@ -313,13 +248,9 @@ def _open_and_select_in_explorer(file_path):
         shell32.ILRemoveLastID.argtypes = [wintypes.LPCVOID]
         shell32.ILRemoveLastID.restype = wintypes.BOOL
 
-        # 初始化 COM
-        ole32.CoInitializeEx(None, 0)  # COINIT_APARTMENTTHREADED
-
         # 1. 获取完整路径的绝对 PIDL
         pidl_full = shell32.ILCreateFromPathW(file_path)
         if not pidl_full:
-            ole32.CoUninitialize()
             raise RuntimeError("ILCreateFromPathW failed")
 
         try:
@@ -349,7 +280,6 @@ def _open_and_select_in_explorer(file_path):
             )
 
             shell32.ILFree(parent_pidl)
-            ole32.CoUninitialize()
 
             if hr == 0:  # S_OK
                 return True

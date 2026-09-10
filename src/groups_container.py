@@ -13,7 +13,7 @@ class GroupsContainer(QScrollArea):
 
     shortcutMoved = pyqtSignal(str, int, str, int)
     shortcutLaunched = pyqtSignal()
-    shortcutRenamed = pyqtSignal(str, str, str)  # group_id, old_path, new_path
+    shortcutRenamed = pyqtSignal(str, str, str, str)  # group_id, old_path, new_path, new_name
     groupMoved = pyqtSignal(int, int)  # from_index, to_index（仅自定义分组之间）
     groupRenamed = pyqtSignal(str, str)
     groupColorChanged = pyqtSignal(str, int)
