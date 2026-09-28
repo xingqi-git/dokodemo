@@ -1,19 +1,21 @@
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QMenu, QAction, QInputDialog, QFrame, QMessageBox
+    QMenu, QAction, QInputDialog, QFrame, QMessageBox,
+    QSizePolicy
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QMimeData, QPoint
 from PyQt5.QtGui import QDrag, QFont, QPainter, QColor
 
 from .shortcut_item import ShortcutItem
 from .flow_layout import FlowLayout
-from .config import UNGROUPED_ID, PRESET_COLORS
+from .config import PRESET_COLORS, MIN_GROUP_WIDTH
 
 
 class GroupWidget(QFrame):
     """
     分组组件：标题栏 + 快捷方式流式布局
-    支持组内拖拽排序、接收外部拖拽、右键菜单
+    支持右边缘拖拽调整宽度、组内拖拽排序、接收外部拖拽、右键菜单
+    高度根据内容自动调整
     """
 
     shortcutMoved = pyqtSignal(str, int, str, int)  # from_group, from_idx, to_group, to_idx
@@ -23,42 +25,61 @@ class GroupWidget(QFrame):
     groupRenamed = pyqtSignal(str, str)  # group_id, new_name
     groupColorChanged = pyqtSignal(str, int)  # group_id, color_index
     groupDeleted = pyqtSignal(str)  # group_id
+    groupWidthChanged = pyqtSignal(str, int)  # group_id, width
 
-    def __init__(self, group_id, group_name, color_index, shortcuts, icon_size=64, parent=None):
+    def __init__(self, group_id, group_name, color_index, shortcuts, group_width, group_list=None, parent=None):
         super().__init__(parent)
         self.group_id = group_id
         self.group_name = group_name
         self.color_index = color_index
-        self.icon_size = icon_size
+        self.group_width = max(MIN_GROUP_WIDTH, int(group_width))
         self.shortcuts = shortcuts  # [{path, name}, ...]
-        self._is_ungrouped = (group_id == UNGROUPED_ID)
+        self.group_list = group_list or []  # [(id, name), ...] 所有分组列表
         self._drag_start_pos = None
         self._drop_indicator = -1  # 插入位置指示
 
+        # 宽度调整
+        self._resize_margin = 6
+        self._is_resizing = False
+        self._resize_start_width = 0
+        self._resize_start_x = 0
+
         self.setAcceptDrops(True)
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMinimumHeight(120)
+        self.setFixedWidth(self.group_width)
+        # 高度由内容决定（heightForWidth）
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
         self._init_ui()
         self._apply_style()
 
+        # 给 resize handle 安装事件过滤器，捕获鼠标事件
+        self._resize_handle.installEventFilter(self)
+
     def _init_ui(self):
-        main_layout = QVBoxLayout(self)
+        # 外层水平布局：内容 + 右侧拖拽手柄
+        outer_layout = QHBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # 内容区
+        self._content_widget = QWidget(self)
+        main_layout = QVBoxLayout(self._content_widget)
         main_layout.setContentsMargins(0, 0, 0, 12)
         main_layout.setSpacing(8)
 
         # 标题栏
-        self.title_bar = QWidget(self)
-        self.title_bar.setFixedHeight(40)
-        self.title_bar.setCursor(Qt.OpenHandCursor if not self._is_ungrouped else Qt.ArrowCursor)
+        self.title_bar = QWidget(self._content_widget)
+        self.title_bar.setFixedHeight(32)
+        self.title_bar.setCursor(Qt.OpenHandCursor)
         title_layout = QHBoxLayout(self.title_bar)
-        title_layout.setContentsMargins(16, 0, 12, 0)
+        title_layout.setContentsMargins(12, 0, 12, 0)
         title_layout.setSpacing(8)
 
         self.title_label = QLabel(self.group_name, self.title_bar)
         title_font = QFont()
         title_font.setBold(True)
-        title_font.setPointSize(11)
+        title_font.setPointSize(10)
         self.title_label.setFont(title_font)
         title_layout.addWidget(self.title_label)
 
@@ -71,11 +92,22 @@ class GroupWidget(QFrame):
         main_layout.addWidget(self.title_bar)
 
         # 快捷方式流式布局区域
-        self.flow_widget = QWidget(self)
-        self.flow_layout = FlowLayout(self.flow_widget, margin=12, spacing=6)
+        self.flow_widget = QWidget(self._content_widget)
+        self.flow_layout = FlowLayout(self.flow_widget, margin=10, spacing=4)
         self.flow_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        # flow_widget 高度由 FlowLayout 决定（Minimum 表示最小高度=内容高度）
+        self.flow_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
         main_layout.addWidget(self.flow_widget)
+
+        outer_layout.addWidget(self._content_widget, 1)
+
+        # 右侧宽度拖拽手柄（悬浮叠加在右边缘）
+        self._resize_handle = QWidget(self)
+        self._resize_handle.setFixedWidth(self._resize_margin)
+        self._resize_handle.setCursor(Qt.SizeHorCursor)
+        self._resize_handle.setStyleSheet("background-color: transparent;")
+        # 手动定位，由 resizeEvent 控制位置
 
         self._populate_shortcuts()
 
@@ -86,15 +118,15 @@ class GroupWidget(QFrame):
             GroupWidget {{
                 background-color: {color['light']};
                 border: 1px solid {color['primary']};
-                border-radius: 12px;
+                border-radius: 10px;
             }}
         """)
         self.title_label.setStyleSheet(f"color: {color['dark']};")
         self.title_bar.setStyleSheet(f"""
             QWidget {{
                 background-color: {color['primary']};
-                border-top-left-radius: 12px;
-                border-top-right-radius: 12px;
+                border-top-left-radius: 9px;
+                border-top-right-radius: 9px;
             }}
         """)
         self.count_label.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 11px;")
@@ -110,19 +142,21 @@ class GroupWidget(QFrame):
         for i, sc in enumerate(self.shortcuts):
             item = ShortcutItem(
                 sc["path"], sc["name"],
-                self.icon_size,
                 self.group_id, i,
+                self.group_list,
                 self.flow_widget
             )
             item.shortcutLaunched.connect(self.shortcutLaunched.emit)
             item.shortcutRenamed.connect(self._on_shortcut_renamed)
+            item.shortcutMoveToGroup.connect(self._on_shortcut_move_to_group)
             self.flow_layout.addWidget(item)
 
         self.count_label.setText(f"{len(self.shortcuts)} 项")
+        # 触发高度重算
+        self.updateGeometry()
 
     def _on_shortcut_renamed(self, old_path, new_path, new_name):
         """快捷方式重命名后，更新本地数据并向上传递"""
-        # 更新本地 shortcuts 数据中的路径和名称
         for sc in self.shortcuts:
             if sc["path"] == old_path:
                 sc["path"] = new_path
@@ -130,10 +164,15 @@ class GroupWidget(QFrame):
                 break
         self.shortcutRenamed.emit(self.group_id, old_path, new_path, new_name)
 
-    def update_icon_size(self, size):
-        """更新图标大小"""
-        self.icon_size = size
-        self._populate_shortcuts()
+    def _on_shortcut_move_to_group(self, from_group, from_idx, to_group):
+        """快捷方式右键移动到分组"""
+        # 目标是本组的话忽略
+        if from_group == to_group:
+            return
+        if to_group == self.group_id:
+            return
+        # 向上转发，最终由 GroupsContainer/MainWindow 处理
+        self.shortcutMoved.emit(from_group, from_idx, to_group, -1)
 
     def update_shortcuts(self, shortcuts):
         """更新快捷方式列表（全量重建）"""
@@ -150,15 +189,65 @@ class GroupWidget(QFrame):
         self.group_name = name
         self.title_label.setText(name)
 
-    # ---- 拖拽：分组整体拖拽 ----
+    def set_group_width(self, width):
+        """设置分组宽度"""
+        width = max(MIN_GROUP_WIDTH, int(width))
+        self.group_width = width
+        self.setFixedWidth(width)
+        self.updateGeometry()
+
+    def hasHeightForWidth(self):
+        """告诉布局系统高度随宽度变化"""
+        return True
+
+    def heightForWidth(self, width):
+        """根据宽度计算需要的高度（标题栏 + flow内容 + 边距 + 间距）"""
+        # 标题栏固定高度 32 + 间距 8 + bottom margin 12 + flow高度
+        flow_width = width
+        flow_height = self.flow_layout.heightForWidth(flow_width)
+        return 32 + 8 + 12 + flow_height
+
+    def resizeEvent(self, event):
+        """调整大小时同步更新右侧手柄位置"""
+        super().resizeEvent(event)
+        handle_width = self._resize_margin
+        self._resize_handle.setGeometry(
+            self.width() - handle_width,
+            0,
+            handle_width,
+            self.height()
+        )
+        self._resize_handle.raise_()
+
+    # ---- 宽度调整（右侧拖拽手柄） ----
+    def eventFilter(self, obj, event):
+        if obj is self._resize_handle:
+            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._is_resizing = True
+                self._resize_start_width = self.group_width
+                self._resize_start_x = event.globalX()
+                return True
+            elif event.type() == event.MouseMove and event.buttons() & Qt.LeftButton and self._is_resizing:
+                dx = event.globalX() - self._resize_start_x
+                new_width = max(MIN_GROUP_WIDTH, self._resize_start_width + dx)
+                self.set_group_width(new_width)
+                return True
+            elif event.type() == event.MouseButtonRelease and event.button() == Qt.LeftButton and self._is_resizing:
+                self._is_resizing = False
+                self.groupWidthChanged.emit(self.group_id, self.group_width)
+                return True
+        return super().eventFilter(obj, event)
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and not self._is_ungrouped:
+        if event.button() == Qt.LeftButton:
+            # 检测标题栏分组整体拖拽
             if self.title_bar.geometry().contains(event.pos()):
                 self._drag_start_pos = event.pos()
                 return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # 分组整体拖拽
         if event.buttons() & Qt.LeftButton and self._drag_start_pos:
             distance = (event.pos() - self._drag_start_pos).manhattanLength()
             if distance >= 15:
@@ -180,9 +269,9 @@ class GroupWidget(QFrame):
         drag.setMimeData(mime_data)
 
         pixmap = self.grab()
-        pixmap = pixmap.scaledToWidth(200, Qt.SmoothTransformation)
+        pixmap = pixmap.scaledToWidth(180, Qt.SmoothTransformation)
         drag.setPixmap(pixmap)
-        drag.setHotSpot(QPoint(20, 20))
+        drag.setHotSpot(QPoint(20, 16))
 
         self.groupDragStarted.emit(self.group_id)
         drag.exec_(Qt.MoveAction)
@@ -251,7 +340,7 @@ class GroupWidget(QFrame):
                 current_row_bottom = geom.bottom()
                 row_start = i
             elif geom.top() > current_row_bottom + 2:
-                # 新行（间距超过 2px 视为换行）
+                # 新行
                 rows.append((row_start, i - 1, current_row_top, current_row_bottom))
                 current_row_top = geom.top()
                 current_row_bottom = geom.bottom()
@@ -260,21 +349,19 @@ class GroupWidget(QFrame):
                 current_row_bottom = max(current_row_bottom, geom.bottom())
         rows.append((row_start, count - 1, current_row_top, current_row_bottom))
 
-        # 第二步：找到鼠标所在的行（或最近的行）
+        # 第二步：找到鼠标所在的行
         target_row_idx = 0
         for i, (_, _, top, bottom) in enumerate(rows):
             if flow_pos.y() <= bottom:
                 target_row_idx = i
                 break
-            target_row_idx = i  # 默认最后一行
+            target_row_idx = i
 
         row_start, row_end, row_top, row_bottom = rows[target_row_idx]
 
-        # 第三步：在目标行内，根据 x 位置找插入点
-        # 行上方空白 → 插到行首
+        # 第三步：在目标行内按 x 位置找插入点
         if flow_pos.y() < row_top:
             return row_start
-        # 行内 → 按 x 中心点判断
         if flow_pos.y() <= row_bottom:
             for i in range(row_start, row_end + 1):
                 item = self.flow_layout.itemAt(i)
@@ -284,7 +371,6 @@ class GroupWidget(QFrame):
                 if flow_pos.x() < geom.center().x():
                     return i
             return row_end + 1
-        # 行下方空白 → 插到行尾
         return row_end + 1
 
     def paintEvent(self, event):
@@ -334,9 +420,6 @@ class GroupWidget(QFrame):
 
     # ---- 右键菜单 ----
     def contextMenuEvent(self, event):
-        if self._is_ungrouped:
-            return
-
         menu = QMenu(self)
 
         rename_action = QAction("重命名", self)
@@ -367,10 +450,9 @@ class GroupWidget(QFrame):
         self.groupColorChanged.emit(self.group_id, color_index)
 
     def _on_delete(self):
-        from PyQt5.QtWidgets import QMessageBox
         reply = QMessageBox.question(
             self, "删除分组",
-            f"确定要删除分组「{self.group_name}」吗？\n组内快捷方式将移至未添加分组。",
+            f"确定要删除分组「{self.group_name}」吗？\n组内快捷方式将移回全部快捷方式。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )

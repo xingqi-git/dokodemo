@@ -2,9 +2,8 @@ import json
 import os
 import uuid
 
-# 未分组的固定ID
-UNGROUPED_ID = "ungrouped"
-UNGROUPED_NAME = "未添加分组"
+# "全部快捷方式" 区域的虚拟 ID（仅用于拖拽数据标识，不写入配置）
+ALL_SHORTCUTS_ID = "__all__"
 
 # 预设配色方案（主色、浅色、深色）
 PRESET_COLORS = [
@@ -18,11 +17,29 @@ PRESET_COLORS = [
     {"name": "岩石灰", "primary": "#718096", "light": "#EDF0F4", "dark": "#4A5568"},
 ]
 
+# 图标固定大小（Windows 中等图标尺寸）
+ICON_SIZE = 48
+
+# 分组默认宽度（约能放 3 个图标）
+DEFAULT_GROUP_WIDTH = 240
+
+# 分组最小宽度（约能放 1 个图标）
+MIN_GROUP_WIDTH = 100
+
+# 停靠模式
+DOCK_MODE_FLOAT = ""       # 自由浮动（按上次位置大小）
+DOCK_MODE_FULLSCREEN = "fullscreen"  # 全屏
+DOCK_MODE_CENTER = "center"  # 居中
+DOCK_MODE_LEFT = "left"     # 靠左
+DOCK_MODE_RIGHT = "right"   # 靠右
+DOCK_MODE_BOTTOM_LEFT = "bottom_left"  # 左下
+
 DEFAULT_CONFIG = {
     "shortcut_dir": "",
-    "icon_size": 64,
-    "columns": 2,
-    "groups": []
+    "shortcuts": [],
+    "groups": [],
+    "dock_mode": "",       # "" 表示自由浮动
+    "window_geometry": None  # [x, y, w, h] 自由浮动时的位置大小
 }
 
 
@@ -51,6 +68,34 @@ class ConfigManager:
             if key not in self.config:
                 self.config[key] = value
 
+        # 兼容旧版本：旧配置中有 ungrouped 分组，迁移到顶层 shortcuts
+        self._migrate_from_old_format()
+
+    def _migrate_from_old_format(self):
+        """从旧格式迁移：未分组快捷方式 → 顶层 shortcuts"""
+        groups = self.config.get("groups", [])
+        ungrouped = None
+        for i, g in enumerate(groups):
+            if g.get("id") == "ungrouped":
+                ungrouped = g
+                break
+        if ungrouped is not None:
+            # 把未分组的快捷方式移到顶层
+            top_shortcuts = self.config.get("shortcuts", [])
+            ungrouped_shortcuts = ungrouped.get("shortcuts", [])
+            # 去重（按 path）
+            existing_paths = {s["path"] for s in top_shortcuts}
+            for sc in ungrouped_shortcuts:
+                if sc["path"] not in existing_paths:
+                    top_shortcuts.append(sc)
+            self.config["shortcuts"] = top_shortcuts
+            # 从未分组列表中移除
+            self.config["groups"] = [g for g in groups if g.get("id") != "ungrouped"]
+            # 移除旧字段
+            self.config.pop("icon_size", None)
+            self.config.pop("columns", None)
+            self.save()
+
     def save(self):
         """保存配置到文件"""
         try:
@@ -69,39 +114,25 @@ class ConfigManager:
         self.config["shortcut_dir"] = value
         self.save()
 
-    # ---- 图标大小 ----
+    # ---- 全部快捷方式（顶层） ----
     @property
-    def icon_size(self):
-        return self.config.get("icon_size", 64)
-
-    @icon_size.setter
-    def icon_size(self, value):
-        self.config["icon_size"] = max(32, min(128, int(value)))
-        self.save()
-
-    # ---- 列数 ----
-    @property
-    def columns(self):
-        return self.config.get("columns", 2)
-
-    @columns.setter
-    def columns(self, value):
-        self.config["columns"] = max(1, min(5, int(value)))
-        self.save()
+    def shortcuts(self):
+        """获取顶层（未分组）快捷方式列表"""
+        return self.config.get("shortcuts", [])
 
     # ---- 分组管理 ----
     @property
     def groups(self):
         return self.config.get("groups", [])
 
-    def add_group(self, name, color_index=0):
+    def add_group(self, name, color_index=0, width=None):
         """添加新分组，返回分组ID"""
         group_id = str(uuid.uuid4())[:8]
-        color = PRESET_COLORS[color_index % len(PRESET_COLORS)]
         new_group = {
             "id": group_id,
             "name": name,
-            "color_index": color_index,
+            "color_index": color_index % len(PRESET_COLORS),
+            "width": width if width else DEFAULT_GROUP_WIDTH,
             "shortcuts": []
         }
         self.config["groups"].append(new_group)
@@ -109,24 +140,19 @@ class ConfigManager:
         return group_id
 
     def remove_group(self, group_id):
-        """删除分组，将组内快捷方式移到未分组"""
-        if group_id == UNGROUPED_ID:
-            return  # 未分组不可删除
+        """删除分组，将组内快捷方式移回顶层全部快捷方式"""
         group = self.get_group(group_id)
         if not group:
             return
         shortcuts = group.get("shortcuts", [])
         self.config["groups"] = [g for g in self.config["groups"] if g["id"] != group_id]
-        # 移到未分组
+        # 移回顶层
         if shortcuts:
-            ungrouped = self._get_or_create_ungrouped()
-            ungrouped["shortcuts"].extend(shortcuts)
+            self.config["shortcuts"].extend(shortcuts)
         self.save()
 
     def rename_group(self, group_id, new_name):
         """重命名分组"""
-        if group_id == UNGROUPED_ID:
-            return  # 未分组不可改名
         group = self.get_group(group_id)
         if group:
             group["name"] = new_name
@@ -139,6 +165,34 @@ class ConfigManager:
             group["color_index"] = color_index % len(PRESET_COLORS)
             self.save()
 
+    # ---- 停靠模式 ----
+    @property
+    def dock_mode(self):
+        return self.config.get("dock_mode", DOCK_MODE_FLOAT)
+
+    @dock_mode.setter
+    def dock_mode(self, value):
+        self.config["dock_mode"] = value
+        self.save()
+
+    # ---- 窗口几何（自由浮动时保存/恢复） ----
+    @property
+    def window_geometry(self):
+        return self.config.get("window_geometry")
+
+    @window_geometry.setter
+    def window_geometry(self, value):
+        self.config["window_geometry"] = value
+        self.save()
+
+    # ---- 分组宽度 ----
+    def set_group_width(self, group_id, width):
+        """设置分组宽度"""
+        group = self.get_group(group_id)
+        if group:
+            group["width"] = max(MIN_GROUP_WIDTH, int(width))
+            self.save()
+
     def get_group(self, group_id):
         """根据ID获取分组"""
         for g in self.config["groups"]:
@@ -147,90 +201,74 @@ class ConfigManager:
         return None
 
     def move_group(self, from_index, to_index):
-        """移动分组顺序（未分组固定在第一位，不参与移动）"""
+        """移动分组顺序"""
         groups = self.config["groups"]
         if 0 <= from_index < len(groups) and 0 <= to_index < len(groups):
-            # 未分组不允许移动
-            if groups[from_index]["id"] == UNGROUPED_ID:
-                return
-            # 不允许移到未分组前面（如果未分组存在且在第0位）
-            if len(groups) > 0 and groups[0]["id"] == UNGROUPED_ID and to_index == 0:
-                to_index = 1
             item = groups.pop(from_index)
             groups.insert(to_index, item)
-            # 确保未分组始终在第一位
-            self._ensure_ungrouped_first()
             self.save()
 
-    def _ensure_ungrouped_first(self):
-        """确保未分组始终在列表第一位"""
-        groups = self.config["groups"]
-        ungrouped_idx = -1
-        for i, g in enumerate(groups):
-            if g["id"] == UNGROUPED_ID:
-                ungrouped_idx = i
-                break
-        if ungrouped_idx > 0:
-            item = groups.pop(ungrouped_idx)
-            groups.insert(0, item)
-
-    # ---- 未分组管理 ----
-    def _get_or_create_ungrouped(self):
-        """获取或创建未分组（仅内部数据用，不显示在groups列表头部）"""
-        for g in self.config["groups"]:
-            if g["id"] == UNGROUPED_ID:
-                return g
-        ungrouped = {
-            "id": UNGROUPED_ID,
-            "name": UNGROUPED_NAME,
-            "color_index": 7,  # 岩石灰
-            "shortcuts": []
-        }
-        self.config["groups"].insert(0, ungrouped)
-        return ungrouped
-
-    # ---- dokodemo ----
+    # ---- 快捷方式移动 ----
     def move_shortcut(self, from_group_id, from_index, to_group_id, to_index):
-        """移动快捷方式（可跨分组）"""
-        from_group = self.get_group(from_group_id)
-        to_group = self.get_group(to_group_id)
-        if not from_group or not to_group:
+        """移动快捷方式（可跨分组，支持顶层 ALL_SHORTCUTS_ID）"""
+        from_list = self._get_shortcut_list(from_group_id)
+        to_list = self._get_shortcut_list(to_group_id)
+        if from_list is None or to_list is None:
             return
-        shortcuts = from_group.get("shortcuts", [])
-        if from_index < 0 or from_index >= len(shortcuts):
+        if from_index < 0 or from_index >= len(from_list):
             return
-        item = shortcuts.pop(from_index)
-        to_shortcuts = to_group.get("shortcuts", [])
-        if to_index < 0 or to_index > len(to_shortcuts):
-            to_index = len(to_shortcuts)
-        to_shortcuts.insert(to_index, item)
+        item = from_list.pop(from_index)
+        if to_index < 0 or to_index > len(to_list):
+            to_index = len(to_list)
+        # 同列表移动时，源在目标前需减一
+        if from_list is to_list and from_index < to_index:
+            to_index -= 1
+        to_list.insert(to_index, item)
         self.save()
 
+    def _get_shortcut_list(self, group_id):
+        """根据 group_id 获取对应的快捷方式列表引用"""
+        if group_id == ALL_SHORTCUTS_ID:
+            return self.config["shortcuts"]
+        group = self.get_group(group_id)
+        if group:
+            return group.get("shortcuts", [])
+        return None
+
+    # ---- 同步文件系统快捷方式 ----
     def sync_shortcuts(self, shortcut_paths_with_names):
         """
         同步文件夹中的快捷方式
         shortcut_paths_with_names: [(path, display_name), ...]
         返回新增和删除的数量
         """
-        ungrouped = self._get_or_create_ungrouped()
         existing_paths = set()
 
-        # 收集所有分组中已有的快捷方式路径
+        # 收集所有已有的快捷方式路径（顶层 + 各分组）
+        for s in self.config.get("shortcuts", []):
+            existing_paths.add(s["path"])
         for g in self.config["groups"]:
             for s in g.get("shortcuts", []):
                 existing_paths.add(s["path"])
 
         current_paths = {path for path, _ in shortcut_paths_with_names}
 
-        # 新增的放到未分组
+        # 新增的放到顶层全部快捷方式
         added = 0
         for path, name in shortcut_paths_with_names:
             if path not in existing_paths:
-                ungrouped["shortcuts"].append({"path": path, "name": name})
+                self.config["shortcuts"].append({"path": path, "name": name})
                 added += 1
 
         # 删除已不存在的
         removed = 0
+        # 顶层
+        before = len(self.config["shortcuts"])
+        self.config["shortcuts"] = [
+            s for s in self.config["shortcuts"] if s["path"] in current_paths
+        ]
+        removed += before - len(self.config["shortcuts"])
+        # 各分组
         for g in self.config["groups"]:
             before = len(g["shortcuts"])
             g["shortcuts"] = [s for s in g["shortcuts"] if s["path"] in current_paths]

@@ -16,7 +16,7 @@ def _set_app_id():
 
 _set_app_id()
 
-from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont
 from PyQt5.QtNetwork import QLocalServer, QLocalSocket
 
@@ -65,9 +65,6 @@ def main():
     server.removeServer(_SINGLE_INSTANCE_SERVER)  # 清理上次残留
     server.listen(_SINGLE_INSTANCE_SERVER)
 
-    # 关闭最后一个窗口不退出（托盘驻留）
-    app.setQuitOnLastWindowClosed(False)
-
     # 设置默认字体
     font = QFont("Microsoft YaHei", 9)
     app.setFont(font)
@@ -84,40 +81,17 @@ def main():
     window.setWindowTitle("dokodemo")
     window.show()
 
-    # ---- 系统托盘 ----
-    tray = QSystemTrayIcon(app_icon)
-    tray.setToolTip("dokodemo")
-
-    tray_menu = QMenu()
-
-    show_action = QAction("显示主窗口", tray_menu)
-    show_action.triggered.connect(lambda: _show_window(window))
-    tray_menu.addAction(show_action)
-
-    tray_menu.addSeparator()
-
-    quit_action = QAction("退出", tray_menu)
-    quit_action.triggered.connect(app.quit)
-    tray_menu.addAction(quit_action)
-
-    tray.setContextMenu(tray_menu)
-
-    def _on_tray_activated(reason):
-        # 单击或双击托盘图标 → 切换显示/隐藏
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            if window.isVisible():
-                window.hide()
-            else:
-                _show_window(window)
-
-    tray.activated.connect(_on_tray_activated)
-    tray.show()
-
-    # ---- 点击快捷方式后自动隐藏到托盘 ----
+    # ---- 点击快捷方式后最小化窗口 ----
     def _on_shortcut_launched():
-        window.hide()
+        window.showMinimized()
 
     window.groups_container.shortcutLaunched.connect(_on_shortcut_launched)
+
+    # ---- 点击空白区域最小化窗口 ----
+    def _on_blank_clicked():
+        window.showMinimized()
+
+    window.groups_container.blankClicked.connect(_on_blank_clicked)
 
     # ---- 服务端收到第二个实例的唤醒消息 ----
     def _on_new_connection():

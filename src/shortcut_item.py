@@ -3,6 +3,7 @@ from PyQt5.QtCore import Qt, QSize, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QFontMetrics, QDrag, QColor, QBrush
 
 from .shortcut import get_shortcut_icon, launch_shortcut, open_shortcut_location, rename_shortcut
+from .config import ICON_SIZE, ALL_SHORTCUTS_ID
 
 
 class ShortcutItem(QWidget):
@@ -10,14 +11,15 @@ class ShortcutItem(QWidget):
 
     shortcutLaunched = pyqtSignal()  # 快捷方式被点击启动
     shortcutRenamed = pyqtSignal(str, str, str)  # old_path, new_path, new_name
+    shortcutMoveToGroup = pyqtSignal(str, int, str)  # from_group, index, to_group_id (ALL_SHORTCUTS_ID 表示移出)
 
-    def __init__(self, shortcut_path, display_name, icon_size=64, group_id="", index=0, parent=None):
+    def __init__(self, shortcut_path, display_name, group_id="", index=0, group_list=None, parent=None):
         super().__init__(parent)
         self.shortcut_path = shortcut_path
         self.display_name = display_name
-        self.icon_size = icon_size
         self.group_id = group_id
         self.index = index
+        self.group_list = group_list or []  # [(id, name), ...]
         self._drag_start_pos = None
 
         self.setFixedSize(self._calc_size())
@@ -28,8 +30,8 @@ class ShortcutItem(QWidget):
 
     def _calc_size(self):
         """计算组件尺寸：图标 + 文字区域"""
-        width = self.icon_size + 16  # 左右各8px边距
-        height = self.icon_size + 40 + 8  # 图标 + 两行文字 + 底部边距
+        width = ICON_SIZE + 16  # 左右各8px边距
+        height = ICON_SIZE + 40 + 8  # 图标 + 两行文字 + 底部边距
         return QSize(width, height)
 
     def _init_ui(self):
@@ -41,7 +43,7 @@ class ShortcutItem(QWidget):
         # 图标（先显示占位，异步加载真实图标）
         self.icon_label = QLabel(self)
         self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setFixedSize(self.icon_size, self.icon_size)
+        self.icon_label.setFixedSize(ICON_SIZE, ICON_SIZE)
         self.icon_label.setScaledContents(True)
         self.icon_label.setAttribute(Qt.WA_TranslucentBackground)
         self._set_placeholder_icon()
@@ -51,7 +53,7 @@ class ShortcutItem(QWidget):
         self.name_label = QLabel(self)
         self.name_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         self.name_label.setWordWrap(False)
-        self.name_label.setFixedWidth(self.icon_size + 8)
+        self.name_label.setFixedWidth(ICON_SIZE + 8)
         self.name_label.setAttribute(Qt.WA_TranslucentBackground)
         self._update_name()
         layout.addWidget(self.name_label)
@@ -62,16 +64,16 @@ class ShortcutItem(QWidget):
 
     def _set_placeholder_icon(self):
         """显示占位图标"""
-        pixmap = QPixmap(self.icon_size, self.icon_size)
+        pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setBrush(QBrush(QColor("#E0E0E0")))
         painter.setPen(Qt.NoPen)
-        margin = int(self.icon_size * 0.2)
+        margin = int(ICON_SIZE * 0.2)
         painter.drawRoundedRect(
-            margin, margin, self.icon_size - 2 * margin, self.icon_size - 2 * margin,
-            int(self.icon_size * 0.1), int(self.icon_size * 0.1)
+            margin, margin, ICON_SIZE - 2 * margin, ICON_SIZE - 2 * margin,
+            int(ICON_SIZE * 0.1), int(ICON_SIZE * 0.1)
         )
         painter.end()
         self.icon_label.setPixmap(pixmap)
@@ -82,28 +84,25 @@ class ShortcutItem(QWidget):
             return
         self._icon_loaded = True
         try:
-            pixmap = get_shortcut_icon(self.shortcut_path, self.icon_size)
+            pixmap = get_shortcut_icon(self.shortcut_path, ICON_SIZE)
             self.icon_label.setPixmap(pixmap)
         except Exception:
             pass
 
     def _update_name(self):
         """绘制两行省略的名称"""
-        # 使用 QLabel + 样式实现两行省略
         font = self.name_label.font()
         fm = QFontMetrics(font)
         text = self.display_name
 
-        # 计算两行能容纳的文本
         line_height = fm.height()
-        max_width = self.icon_size + 8
+        max_width = ICON_SIZE + 8
 
         # 第一行
         first_line = ""
         second_line = ""
         remaining = text
 
-        # 逐字添加到第一行，直到放不下
         for i in range(len(remaining)):
             test = remaining[:i + 1]
             if fm.width(test) > max_width:
@@ -130,17 +129,6 @@ class ShortcutItem(QWidget):
 
         self.name_label.setText(display_text)
         self.name_label.setStyleSheet("color: #333; font-size: 12px;")
-
-    def update_icon_size(self, size):
-        """更新图标大小"""
-        self.icon_size = size
-        self.setFixedSize(self._calc_size())
-        self.icon_label.setFixedSize(size, size)
-        self.name_label.setFixedWidth(size + 8)
-        self._icon_loaded = False
-        self._set_placeholder_icon()
-        QTimer.singleShot(0, self._load_real_icon)
-        self._update_name()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -206,12 +194,52 @@ class ShortcutItem(QWidget):
         super().leaveEvent(event)
 
     def contextMenuEvent(self, event):
-        """右键菜单：打开所在位置、重命名"""
+        """右键菜单：打开所在位置、移动到、重命名"""
         menu = QMenu(self)
 
         open_location_action = QAction("打开所在位置", self)
         open_location_action.triggered.connect(self._on_open_location)
         menu.addAction(open_location_action)
+
+        menu.addSeparator()
+
+        # 移动到子菜单
+        move_menu = menu.addMenu("移动到")
+        if self.group_id == ALL_SHORTCUTS_ID:
+            # 未分组：只显示各分组
+            if self.group_list:
+                for gid, gname in self.group_list:
+                    action = QAction(gname, self)
+                    action.triggered.connect(
+                        lambda checked, gid=gid: self._on_move_to_group(gid)
+                    )
+                    move_menu.addAction(action)
+            else:
+                no_group_action = QAction("（暂无分组）", self)
+                no_group_action.setEnabled(False)
+                move_menu.addAction(no_group_action)
+        else:
+            # 在分组内：显示"移出分组" + 其他分组
+            remove_action = QAction("移出分组", self)
+            remove_action.triggered.connect(
+                lambda: self._on_move_to_group(ALL_SHORTCUTS_ID)
+            )
+            move_menu.addAction(remove_action)
+
+            move_menu.addSeparator()
+
+            other_groups = [(gid, gname) for gid, gname in self.group_list if gid != self.group_id]
+            if other_groups:
+                for gid, gname in other_groups:
+                    action = QAction(gname, self)
+                    action.triggered.connect(
+                        lambda checked, gid=gid: self._on_move_to_group(gid)
+                    )
+                    move_menu.addAction(action)
+            else:
+                no_group_action = QAction("（暂无其他分组）", self)
+                no_group_action.setEnabled(False)
+                move_menu.addAction(no_group_action)
 
         menu.addSeparator()
 
@@ -223,6 +251,10 @@ class ShortcutItem(QWidget):
 
     def _on_open_location(self):
         open_shortcut_location(self.shortcut_path)
+
+    def _on_move_to_group(self, to_group_id):
+        """移动到指定分组（ALL_SHORTCUTS_ID 表示移出到全部快捷方式）"""
+        self.shortcutMoveToGroup.emit(self.group_id, self.index, to_group_id)
 
     def _on_rename(self):
         new_name, ok = QInputDialog.getText(

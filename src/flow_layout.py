@@ -84,19 +84,26 @@ class FlowLayout(QLayout):
             space_x = self._spacing
             space_y = self._spacing
 
-            next_x = x + item.sizeHint().width() + space_x
+            item_w = item.sizeHint().width()
+            # 如果子项高度随宽度变化，使用 heightForWidth 计算真实高度
+            if item.hasHeightForWidth():
+                item_h = item.heightForWidth(item_w)
+            else:
+                item_h = item.sizeHint().height()
+
+            next_x = x + item_w + space_x
             if next_x - space_x > effective_rect.right() and line_height > 0:
                 # 换行
                 x = effective_rect.x()
                 y = y + line_height + space_y
-                next_x = x + item.sizeHint().width() + space_x
+                next_x = x + item_w + space_x
                 line_height = 0
 
             if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+                item.setGeometry(QRect(QPoint(x, y), QSize(item_w, item_h)))
 
             x = next_x
-            line_height = max(line_height, item.sizeHint().height())
+            line_height = max(line_height, item_h)
 
         total_height = y + line_height - rect.y() + margins.bottom()
         return total_height
