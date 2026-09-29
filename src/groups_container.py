@@ -105,7 +105,7 @@ class GroupsContainer(QScrollArea):
                 sc["path"], sc["name"],
                 ALL_SHORTCUTS_ID, i,
                 group_list,
-                self._all_flow_widget
+                parent=self._all_flow_widget
             )
             item.shortcutLaunched.connect(self.shortcutLaunched.emit)
             item.shortcutRenamed.connect(self._on_shortcut_renamed_all)

@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMenu, QAction,
     QFileDialog, QInputDialog, QMessageBox, QApplication, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QRectF, QSize
+from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QRectF, QSize, QEvent
 from PyQt5.QtGui import QPainter, QPainterPath, QColor, QBrush, QPen, QFontMetrics, QIcon
 
 from .config import (
@@ -173,6 +173,7 @@ class MainWindow(QWidget):
 
         # 标记：是否正在由程序主动设置窗口几何（避免 resizeEvent/moveEvent 误判为用户手动调整）
         self._setting_geometry = False
+        self._suppress_auto_minimize = False  # 弹系统对话框时，禁止自动最小化
 
         # 目录完整路径（用于省略文本计算）
         self._dir_full_path = ""
@@ -305,6 +306,17 @@ class MainWindow(QWidget):
         self.groups_container.groupIconSizeChanged.connect(self._on_group_icon_size_changed)
         self.groups_container.groupShowNameChanged.connect(self._on_group_show_name_changed)
         self.groups_container.shortcutRenamed.connect(self._on_shortcut_renamed)
+
+    def changeEvent(self, event):
+        # 窗口失去激活时，如果焦点切到了其他程序的窗口，自动最小化
+        # 如果是本程序自己弹的对话框，不最小化
+        # 弹出系统对话框期间（_suppress_auto_minimize）也不最小化
+        if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
+            if not self._suppress_auto_minimize:
+                active = QApplication.activeWindow()
+                if active is None:
+                    self.showMinimized()
+        super().changeEvent(event)
 
     # ---- 标题栏拖动 & 边缘缩放 ----
     def _hit_test_edge(self, pos):
@@ -708,10 +720,14 @@ class MainWindow(QWidget):
 
     # ---- 目录管理 ----
     def _choose_directory(self):
-        directory = QFileDialog.getExistingDirectory(
-            self, "选择快捷方式目录",
-            self.config.shortcut_dir or ""
-        )
+        self._suppress_auto_minimize = True
+        try:
+            directory = QFileDialog.getExistingDirectory(
+                self, "选择快捷方式目录",
+                self.config.shortcut_dir or ""
+            )
+        finally:
+            self._suppress_auto_minimize = False
         if directory:
             self.config.shortcut_dir = directory
             self._update_dir_label()
