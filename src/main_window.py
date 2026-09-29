@@ -1,4 +1,4 @@
-﻿import os
+import os
 import ctypes
 from ctypes import wintypes
 from PyQt5.QtWidgets import (
@@ -278,6 +278,8 @@ class MainWindow(QWidget):
         self._dock_action_group = None  # 后面在 _init_dock_menu 中创建
         self._build_dock_menu()
         self.settings_menu.addMenu(self.dock_menu)
+        self.settings_menu.addSeparator()
+        self.settings_menu.addAction("使用说明", self._show_help)
         self.settings_btn.clicked.connect(self._show_settings_menu)
 
         outer_layout.addWidget(self.main_widget)
@@ -689,6 +691,18 @@ class MainWindow(QWidget):
             # 普通状态底部留圆角半径的空间
             self.main_widget.layout().setContentsMargins(0, 0, 0, self._corner_radius)
         self.update()
+
+    # ---- 使用说明 ----
+    def _show_help(self):
+        text = (
+            "使用说明\n\n"
+            "1. 在电脑上创建一个文件夹，把常用的快捷方式放进去\n"
+            "2. 点右上角 ⚙ →「设置目录」，选择这个文件夹\n"
+            "3. 图标会显示在顶部，拖拽可以调整顺序\n"
+            "4. 可创建分组，把图标拖进分组分类管理\n"
+            "5. 点击图标启动程序，窗口自动最小化"
+        )
+        QMessageBox.information(self, "使用说明", text)
 
     # ---- 目录管理 ----
     def _choose_directory(self):
