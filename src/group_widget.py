@@ -8,7 +8,18 @@ from PyQt5.QtGui import QDrag, QFont, QPainter, QColor
 
 from .shortcut_item import ShortcutItem
 from .flow_layout import FlowLayout
-from .config import PRESET_COLORS, MIN_GROUP_WIDTH
+from .config import PRESET_COLORS, MIN_GROUP_WIDTH, ICON_SIZE, SMALL_ICON_SIZE
+
+
+def _darken_color(color_hex, ratio):
+    """将颜色按 ratio（0~1）加深（与黑色混合），返回十六进制色值"""
+    r = int(color_hex[1:3], 16)
+    g = int(color_hex[3:5], 16)
+    b = int(color_hex[5:7], 16)
+    r = int(r * (1 - ratio))
+    g = int(g * (1 - ratio))
+    b = int(b * (1 - ratio))
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 
 class GroupWidget(QFrame):
@@ -26,8 +37,11 @@ class GroupWidget(QFrame):
     groupColorChanged = pyqtSignal(str, int)  # group_id, color_index
     groupDeleted = pyqtSignal(str)  # group_id
     groupWidthChanged = pyqtSignal(str, int)  # group_id, width
+    groupIconSizeChanged = pyqtSignal(str, int)  # group_id, icon_size
+    groupShowNameChanged = pyqtSignal(str, bool)  # group_id, show_name
 
-    def __init__(self, group_id, group_name, color_index, shortcuts, group_width, group_list=None, parent=None):
+    def __init__(self, group_id, group_name, color_index, shortcuts, group_width,
+                 group_list=None, icon_size=ICON_SIZE, show_name=True, parent=None):
         super().__init__(parent)
         self.group_id = group_id
         self.group_name = group_name
@@ -35,6 +49,8 @@ class GroupWidget(QFrame):
         self.group_width = max(MIN_GROUP_WIDTH, int(group_width))
         self.shortcuts = shortcuts  # [{path, name}, ...]
         self.group_list = group_list or []  # [(id, name), ...] 所有分组列表
+        self.icon_size = icon_size
+        self.show_name = show_name
         self._drag_start_pos = None
         self._drop_indicator = -1  # 插入位置指示
 
@@ -66,14 +82,14 @@ class GroupWidget(QFrame):
         self._content_widget = QWidget(self)
         main_layout = QVBoxLayout(self._content_widget)
         main_layout.setContentsMargins(0, 0, 0, 12)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(2)
 
         # 标题栏
         self.title_bar = QWidget(self._content_widget)
-        self.title_bar.setFixedHeight(32)
+        self.title_bar.setFixedHeight(26)
         self.title_bar.setCursor(Qt.OpenHandCursor)
         title_layout = QHBoxLayout(self.title_bar)
-        title_layout.setContentsMargins(12, 0, 12, 0)
+        title_layout.setContentsMargins(12, 12, 12, 1)
         title_layout.setSpacing(8)
 
         self.title_label = QLabel(self.group_name, self.title_bar)
@@ -85,15 +101,11 @@ class GroupWidget(QFrame):
 
         title_layout.addStretch()
 
-        # 数量标签
-        self.count_label = QLabel(f"{len(self.shortcuts)} 项", self.title_bar)
-        title_layout.addWidget(self.count_label)
-
         main_layout.addWidget(self.title_bar)
 
         # 快捷方式流式布局区域
         self.flow_widget = QWidget(self._content_widget)
-        self.flow_layout = FlowLayout(self.flow_widget, margin=10, spacing=4)
+        self.flow_layout = FlowLayout(self.flow_widget, margin=6, spacing=4)
         self.flow_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         # flow_widget 高度由 FlowLayout 决定（Minimum 表示最小高度=内容高度）
         self.flow_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -112,24 +124,25 @@ class GroupWidget(QFrame):
         self._populate_shortcuts()
 
     def _apply_style(self):
-        """根据配色应用样式"""
+        """根据配色应用样式（一体感，无边框，分组背景略深）"""
         color = PRESET_COLORS[self.color_index % len(PRESET_COLORS)]
+        # 分组背景色：在浅色基础上略加深，与界面底色区分更明显
+        bg_color = _darken_color(color["light"], 0.08)
         self.setStyleSheet(f"""
             GroupWidget {{
-                background-color: {color['light']};
-                border: 1px solid {color['primary']};
+                background-color: {bg_color};
+                border: none;
                 border-radius: 10px;
             }}
         """)
         self.title_label.setStyleSheet(f"color: {color['dark']};")
         self.title_bar.setStyleSheet(f"""
             QWidget {{
-                background-color: {color['primary']};
-                border-top-left-radius: 9px;
-                border-top-right-radius: 9px;
+                background-color: {bg_color};
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
             }}
         """)
-        self.count_label.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 11px;")
 
     def _populate_shortcuts(self):
         """填充快捷方式（流式布局自动换行）"""
@@ -144,14 +157,15 @@ class GroupWidget(QFrame):
                 sc["path"], sc["name"],
                 self.group_id, i,
                 self.group_list,
-                self.flow_widget
+                icon_size=self.icon_size,
+                show_name=self.show_name,
+                parent=self.flow_widget
             )
             item.shortcutLaunched.connect(self.shortcutLaunched.emit)
             item.shortcutRenamed.connect(self._on_shortcut_renamed)
             item.shortcutMoveToGroup.connect(self._on_shortcut_move_to_group)
             self.flow_layout.addWidget(item)
 
-        self.count_label.setText(f"{len(self.shortcuts)} 项")
         # 触发高度重算
         self.updateGeometry()
 
@@ -202,10 +216,10 @@ class GroupWidget(QFrame):
 
     def heightForWidth(self, width):
         """根据宽度计算需要的高度（标题栏 + flow内容 + 边距 + 间距）"""
-        # 标题栏固定高度 32 + 间距 8 + bottom margin 12 + flow高度
+        # 标题栏固定高度 26 + 间距 2 + bottom margin 12 + flow高度
         flow_width = width
         flow_height = self.flow_layout.heightForWidth(flow_width)
-        return 32 + 8 + 12 + flow_height
+        return 26 + 2 + 12 + flow_height
 
     def resizeEvent(self, event):
         """调整大小时同步更新右侧手柄位置"""
@@ -432,6 +446,31 @@ class GroupWidget(QFrame):
             action.triggered.connect(lambda checked, idx=i: self._on_color_change(idx))
             color_menu.addAction(action)
 
+        menu.addSeparator()
+
+        # 图标大小子菜单
+        size_menu = menu.addMenu("图标大小")
+        big_action = QAction("大图标", self)
+        big_action.setCheckable(True)
+        big_action.setChecked(self.icon_size == ICON_SIZE)
+        big_action.triggered.connect(lambda: self._on_icon_size_change(ICON_SIZE))
+        size_menu.addAction(big_action)
+        small_action = QAction("小图标", self)
+        small_action.setCheckable(True)
+        small_action.setChecked(self.icon_size == SMALL_ICON_SIZE)
+        small_action.triggered.connect(lambda: self._on_icon_size_change(SMALL_ICON_SIZE))
+        size_menu.addAction(small_action)
+
+        # 显示/隐藏图标名称
+        if self.show_name:
+            name_action = QAction("隐藏图标名称", self)
+        else:
+            name_action = QAction("显示图标名称", self)
+        name_action.triggered.connect(self._on_show_name_change)
+        menu.addAction(name_action)
+
+        menu.addSeparator()
+
         delete_action = QAction("删除分组", self)
         delete_action.triggered.connect(self._on_delete)
         menu.addAction(delete_action)
@@ -448,6 +487,20 @@ class GroupWidget(QFrame):
 
     def _on_color_change(self, color_index):
         self.groupColorChanged.emit(self.group_id, color_index)
+
+    def _on_icon_size_change(self, size):
+        """切换图标大小"""
+        if self.icon_size == size:
+            return
+        self.icon_size = size
+        self._populate_shortcuts()
+        self.groupIconSizeChanged.emit(self.group_id, size)
+
+    def _on_show_name_change(self):
+        """切换是否显示图标名称"""
+        self.show_name = not self.show_name
+        self._populate_shortcuts()
+        self.groupShowNameChanged.emit(self.group_id, self.show_name)
 
     def _on_delete(self):
         reply = QMessageBox.question(

@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from .group_widget import GroupWidget
 from .shortcut_item import ShortcutItem
 from .flow_layout import FlowLayout
-from .config import ALL_SHORTCUTS_ID
+from .config import ALL_SHORTCUTS_ID, ICON_SIZE
 
 
 class GroupsContainer(QScrollArea):
@@ -24,6 +24,8 @@ class GroupsContainer(QScrollArea):
     groupColorChanged = pyqtSignal(str, int)  # group_id, color_index
     groupDeleted = pyqtSignal(str)  # group_id
     groupWidthChanged = pyqtSignal(str, int)  # group_id, width
+    groupIconSizeChanged = pyqtSignal(str, int)  # group_id, icon_size
+    groupShowNameChanged = pyqtSignal(str, bool)  # group_id, show_name
     blankClicked = pyqtSignal()
 
     def __init__(self, config, parent=None):
@@ -117,7 +119,9 @@ class GroupsContainer(QScrollArea):
                 g.get("shortcuts", []),
                 g.get("width", 240),
                 group_list,
-                self._groups_flow_widget
+                icon_size=g.get("icon_size", ICON_SIZE),
+                show_name=g.get("show_name", True),
+                parent=self._groups_flow_widget
             )
             self._connect_group_signals(gw)
             self._groups_flow_layout.addWidget(gw)
@@ -147,6 +151,8 @@ class GroupsContainer(QScrollArea):
         gw.groupColorChanged.connect(self.groupColorChanged.emit)
         gw.groupDeleted.connect(self.groupDeleted.emit)
         gw.groupWidthChanged.connect(self.groupWidthChanged.emit)
+        gw.groupIconSizeChanged.connect(self.groupIconSizeChanged.emit)
+        gw.groupShowNameChanged.connect(self.groupShowNameChanged.emit)
 
     def _on_shortcut_renamed_all(self, old_path, new_path, new_name):
         """顶层快捷方式重命名"""

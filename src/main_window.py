@@ -302,6 +302,8 @@ class MainWindow(QWidget):
         self.groups_container.groupColorChanged.connect(self._on_group_color_changed)
         self.groups_container.groupDeleted.connect(self._on_group_deleted)
         self.groups_container.groupWidthChanged.connect(self._on_group_width_changed)
+        self.groups_container.groupIconSizeChanged.connect(self._on_group_icon_size_changed)
+        self.groups_container.groupShowNameChanged.connect(self._on_group_show_name_changed)
         self.groups_container.shortcutRenamed.connect(self._on_shortcut_renamed)
 
     # ---- 标题栏拖动 & 边缘缩放 ----
@@ -807,6 +809,12 @@ class MainWindow(QWidget):
 
     def _on_group_width_changed(self, group_id, width):
         self.config.set_group_width(group_id, width)
+
+    def _on_group_icon_size_changed(self, group_id, icon_size):
+        self.config.set_group_icon_size(group_id, icon_size)
+
+    def _on_group_show_name_changed(self, group_id, show_name):
+        self.config.set_group_show_name(group_id, show_name)
 
     def _on_group_deleted(self, group_id):
         self.config.remove_group(group_id)

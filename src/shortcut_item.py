@@ -3,23 +3,26 @@ from PyQt5.QtCore import Qt, QSize, pyqtSignal, QMimeData, QPoint, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QFontMetrics, QDrag, QColor, QBrush
 
 from .shortcut import get_shortcut_icon, launch_shortcut, open_shortcut_location, rename_shortcut
-from .config import ICON_SIZE, ALL_SHORTCUTS_ID
+from .config import ICON_SIZE, SMALL_ICON_SIZE, ALL_SHORTCUTS_ID
 
 
 class ShortcutItem(QWidget):
-    """单个快捷方式项：图标 + 两行名称，支持单击启动和拖拽"""
+    """单个快捷方式项：图标 + 名称，支持单击启动和拖拽"""
 
     shortcutLaunched = pyqtSignal()  # 快捷方式被点击启动
     shortcutRenamed = pyqtSignal(str, str, str)  # old_path, new_path, new_name
     shortcutMoveToGroup = pyqtSignal(str, int, str)  # from_group, index, to_group_id (ALL_SHORTCUTS_ID 表示移出)
 
-    def __init__(self, shortcut_path, display_name, group_id="", index=0, group_list=None, parent=None):
+    def __init__(self, shortcut_path, display_name, group_id="", index=0,
+                 group_list=None, icon_size=ICON_SIZE, show_name=True, parent=None):
         super().__init__(parent)
         self.shortcut_path = shortcut_path
         self.display_name = display_name
         self.group_id = group_id
         self.index = index
         self.group_list = group_list or []  # [(id, name), ...]
+        self.icon_size = icon_size
+        self.show_name = show_name
         self._drag_start_pos = None
 
         self.setFixedSize(self._calc_size())
@@ -30,33 +33,44 @@ class ShortcutItem(QWidget):
 
     def _calc_size(self):
         """计算组件尺寸：图标 + 文字区域"""
-        width = ICON_SIZE + 16  # 左右各8px边距
-        height = ICON_SIZE + 40 + 8  # 图标 + 两行文字 + 底部边距
+        if self.show_name:
+            width = self.icon_size + 16  # 左右各8px边距
+            height = self.icon_size + 40 + 8  # 图标 + 两行文字 + 底部边距
+        else:
+            width = self.icon_size + 16
+            height = self.icon_size + 16  # 上下各8px
         return QSize(width, height)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 4)
-        layout.setSpacing(4)
+        if self.show_name:
+            layout.setContentsMargins(8, 8, 8, 4)
+            layout.setSpacing(4)
+        else:
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(0)
         layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
         # 图标（先显示占位，异步加载真实图标）
         self.icon_label = QLabel(self)
         self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setFixedSize(ICON_SIZE, ICON_SIZE)
+        self.icon_label.setFixedSize(self.icon_size, self.icon_size)
         self.icon_label.setScaledContents(True)
         self.icon_label.setAttribute(Qt.WA_TranslucentBackground)
         self._set_placeholder_icon()
         layout.addWidget(self.icon_label)
 
-        # 名称（两行，超出省略）
-        self.name_label = QLabel(self)
-        self.name_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        self.name_label.setWordWrap(False)
-        self.name_label.setFixedWidth(ICON_SIZE + 8)
-        self.name_label.setAttribute(Qt.WA_TranslucentBackground)
-        self._update_name()
-        layout.addWidget(self.name_label)
+        # 名称
+        if self.show_name:
+            self.name_label = QLabel(self)
+            self.name_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+            self.name_label.setWordWrap(False)
+            self.name_label.setFixedWidth(self.icon_size + 8)
+            self.name_label.setAttribute(Qt.WA_TranslucentBackground)
+            self._update_name()
+            layout.addWidget(self.name_label)
+        else:
+            self.name_label = None
 
         # 延迟加载真实图标，避免阻塞启动
         self._icon_loaded = False
@@ -64,16 +78,16 @@ class ShortcutItem(QWidget):
 
     def _set_placeholder_icon(self):
         """显示占位图标"""
-        pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
+        pixmap = QPixmap(self.icon_size, self.icon_size)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setBrush(QBrush(QColor("#E0E0E0")))
         painter.setPen(Qt.NoPen)
-        margin = int(ICON_SIZE * 0.2)
+        margin = int(self.icon_size * 0.2)
         painter.drawRoundedRect(
-            margin, margin, ICON_SIZE - 2 * margin, ICON_SIZE - 2 * margin,
-            int(ICON_SIZE * 0.1), int(ICON_SIZE * 0.1)
+            margin, margin, self.icon_size - 2 * margin, self.icon_size - 2 * margin,
+            int(self.icon_size * 0.1), int(self.icon_size * 0.1)
         )
         painter.end()
         self.icon_label.setPixmap(pixmap)
@@ -84,19 +98,21 @@ class ShortcutItem(QWidget):
             return
         self._icon_loaded = True
         try:
-            pixmap = get_shortcut_icon(self.shortcut_path, ICON_SIZE)
+            pixmap = get_shortcut_icon(self.shortcut_path, self.icon_size)
             self.icon_label.setPixmap(pixmap)
         except Exception:
             pass
 
     def _update_name(self):
         """绘制两行省略的名称"""
+        if not self.show_name or not self.name_label:
+            return
         font = self.name_label.font()
         fm = QFontMetrics(font)
         text = self.display_name
 
         line_height = fm.height()
-        max_width = ICON_SIZE + 8
+        max_width = self.icon_size + 8
 
         # 第一行
         first_line = ""

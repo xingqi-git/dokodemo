@@ -19,6 +19,7 @@ PRESET_COLORS = [
 
 # 图标固定大小（Windows 中等图标尺寸）
 ICON_SIZE = 48
+SMALL_ICON_SIZE = 32
 
 # 分组默认宽度（约能放 3 个图标）
 DEFAULT_GROUP_WIDTH = 240
@@ -67,6 +68,13 @@ class ConfigManager:
         for key, value in DEFAULT_CONFIG.items():
             if key not in self.config:
                 self.config[key] = value
+
+        # 确保每个分组都有完整的字段（兼容旧配置）
+        for g in self.config.get("groups", []):
+            if "icon_size" not in g:
+                g["icon_size"] = ICON_SIZE
+            if "show_name" not in g:
+                g["show_name"] = True
 
         # 兼容旧版本：旧配置中有 ungrouped 分组，迁移到顶层 shortcuts
         self._migrate_from_old_format()
@@ -133,6 +141,8 @@ class ConfigManager:
             "name": name,
             "color_index": color_index % len(PRESET_COLORS),
             "width": width if width else DEFAULT_GROUP_WIDTH,
+            "icon_size": ICON_SIZE,
+            "show_name": True,
             "shortcuts": []
         }
         self.config["groups"].append(new_group)
@@ -163,6 +173,20 @@ class ConfigManager:
         group = self.get_group(group_id)
         if group:
             group["color_index"] = color_index % len(PRESET_COLORS)
+            self.save()
+
+    def set_group_icon_size(self, group_id, icon_size):
+        """设置分组图标大小"""
+        group = self.get_group(group_id)
+        if group:
+            group["icon_size"] = int(icon_size)
+            self.save()
+
+    def set_group_show_name(self, group_id, show_name):
+        """设置分组是否显示图标名称"""
+        group = self.get_group(group_id)
+        if group:
+            group["show_name"] = bool(show_name)
             self.save()
 
     # ---- 停靠模式 ----
