@@ -100,6 +100,13 @@ def main():
         pass  # 托盘图标已在窗口构造时显示，主窗口保持隐藏
     else:
         window.show()
+        # 首次显示必须真正激活窗口（与从托盘恢复一致）。
+        # 仅 show() 时托盘模式的 Qt.Tool 窗口可能拿不到前台激活态
+        # （打包为无控制台的 pythonw EXE 时必现），导致 changeEvent
+        # 收不到“激活→失活”变化，点窗口外面无法自动收起。延迟到事件
+        # 循环启动后执行，激活才稳定生效。
+        QTimer.singleShot(0, lambda: (window.raise_(),
+                                      window.activateWindow()))
         if autostarted:
             # 与点击标题栏最小化按钮走同一条 showMinimized() 路径
             QTimer.singleShot(
