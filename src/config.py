@@ -33,14 +33,18 @@ DOCK_MODE_FULLSCREEN = "fullscreen"  # 全屏
 DOCK_MODE_CENTER = "center"  # 居中
 DOCK_MODE_LEFT = "left"     # 靠左
 DOCK_MODE_RIGHT = "right"   # 靠右
+DOCK_MODE_TOP = "top"       # 靠上
+DOCK_MODE_BOTTOM = "bottom"  # 靠下
 DOCK_MODE_BOTTOM_LEFT = "bottom_left"  # 左下
+DOCK_MODE_BOTTOM_RIGHT = "bottom_right"  # 右下
 
 DEFAULT_CONFIG = {
     "shortcut_dir": "",
     "shortcuts": [],
     "groups": [],
     "dock_mode": "",       # "" 表示自由浮动
-    "window_geometry": None  # [x, y, w, h] 自由浮动时的位置大小
+    "window_geometry": None,  # [x, y, w, h] 自由浮动时的位置大小
+    "close_to_tray": False  # 关闭窗口时是否隐藏到系统托盘
 }
 
 
@@ -197,6 +201,16 @@ class ConfigManager:
     @dock_mode.setter
     def dock_mode(self, value):
         self.config["dock_mode"] = value
+        self.save()
+
+    # ---- 关闭时隐藏到托盘 ----
+    @property
+    def close_to_tray(self):
+        return bool(self.config.get("close_to_tray", False))
+
+    @close_to_tray.setter
+    def close_to_tray(self, value):
+        self.config["close_to_tray"] = bool(value)
         self.save()
 
     # ---- 窗口几何（自由浮动时保存/恢复） ----

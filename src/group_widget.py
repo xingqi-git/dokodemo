@@ -95,7 +95,7 @@ class GroupWidget(QFrame):
         self.title_label = QLabel(self.group_name, self.title_bar)
         title_font = QFont()
         title_font.setBold(True)
-        title_font.setPointSize(10)
+        title_font.setPointSize(8)
         self.title_label.setFont(title_font)
         title_layout.addWidget(self.title_label)
 

@@ -3,18 +3,24 @@ import ctypes
 from ctypes import wintypes
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMenu, QAction,
-    QFileDialog, QInputDialog, QMessageBox, QApplication, QSizePolicy
+    QFileDialog, QInputDialog, QMessageBox, QApplication, QSizePolicy,
+    QSystemTrayIcon, QWidgetAction
 )
-from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QRectF, QSize, QEvent
-from PyQt5.QtGui import QPainter, QPainterPath, QColor, QBrush, QPen, QFontMetrics, QIcon
+from PyQt5.QtCore import (
+    Qt, QPoint, QTimer, QRect, QRectF, QSize, QEvent
+)
+from PyQt5.QtGui import QPainter, QPainterPath, QColor, QBrush, QPen, QFontMetrics, QIcon, QFont
 
 from .config import (
     ConfigManager, DOCK_MODE_FLOAT, DOCK_MODE_FULLSCREEN, DOCK_MODE_CENTER,
-    DOCK_MODE_LEFT, DOCK_MODE_RIGHT, DOCK_MODE_BOTTOM_LEFT
+    DOCK_MODE_LEFT, DOCK_MODE_RIGHT, DOCK_MODE_TOP, DOCK_MODE_BOTTOM,
+    DOCK_MODE_BOTTOM_LEFT, DOCK_MODE_BOTTOM_RIGHT
 )
 from .shortcut import scan_shortcuts, clear_icon_cache
 from .groups_container import GroupsContainer
 from .styles import GLOBAL_QSS
+from .app_icon import get_app_icon
+from . import autostart
 
 
 def _make_icon_pixmap(draw_fn, size=16, color="#333", pen_width=1.2):
@@ -143,6 +149,92 @@ _HTBOTTOMRIGHT = 17
 
 _IS_WINDOWS = os.name == "nt"
 
+# ---- Win32：任务栏条目由窗口扩展样式控制（运行时热切换，无需重建窗口/重启）----
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080   # 工具窗口：不在任务栏/Alt+Tab 显示
+_WS_EX_APPWINDOW = 0x00040000     # 应用窗口：强制在任务栏显示
+_SWP_NOMOVE = 0x0002
+_SWP_NOSIZE = 0x0001
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
+_SWP_FRAMECHANGED = 0x0020
+
+
+class TrayMenuItem(QWidget):
+    """设置菜单中勾选项的“显示部分”：文字靠左、对勾靠右。
+
+    重要：本 widget 不处理任何鼠标事件（WA_TransparentForMouseEvents），
+    点击全部穿透给 QMenu，由标准 checkable QAction 接管交互。否则 QMenu
+    的鼠标捕获与自定义 mousePress/Release 会竞争事件，导致需要点好几次
+    才生效。
+    """
+
+    def __init__(self, text, checked=False, parent=None):
+        super().__init__(parent)
+        self._checked = checked
+        self.setObjectName("trayMenuItem")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        # 鼠标事件全部穿透到下层 QMenu，交互由 QAction 处理
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # 宽度由内容（文字+紧跟的对勾）决定，避免撑出右侧大片空白
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+        # 左 24px：QWidgetAction 不受 QMenu::item 的 padding 影响，
+        # 这里补齐到与普通菜单项文字同一左边缘（菜单 padding 4 + 24）
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(24, 8, 12, 8)
+        layout.setSpacing(8)
+
+        self._text_label = QLabel(text, self)
+        self._text_label.setStyleSheet("font-size: 13px; color: #333; background: transparent;")
+        layout.addWidget(self._text_label)
+
+        # 对勾紧跟文字（固定占位，避免勾选时文字/宽度跳动），剩余空间留在右侧
+        self._check_label = QLabel(self)
+        self._check_label.setObjectName("checkLabel")
+        self._check_label.setFixedWidth(14)
+        self._check_label.setAlignment(Qt.AlignCenter)
+        check_font = QFont(self.font())
+        check_font.setBold(True)
+        check_font.setPointSize(10)
+        self._check_label.setFont(check_font)
+        self._check_label.setStyleSheet("color: #0078D7; background: transparent;")
+        layout.addWidget(self._check_label)
+
+        layout.addStretch()
+
+        # hover 背景由外部（菜单事件过滤器）通过 hovered 属性驱动
+        self.setStyleSheet("""
+            QWidget#trayMenuItem {
+                background-color: transparent;
+                border-radius: 4px;
+            }
+            QWidget#trayMenuItem[hovered="true"] {
+                background-color: #E5E5E5;
+            }
+            QWidget#trayMenuItem:disabled QLabel {
+                color: #A5A5A5;
+            }
+        """)
+        self._update_check()
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, checked):
+        """仅更新显示；勾选状态的真实来源是关联的 QAction"""
+        self._checked = bool(checked)
+        self._update_check()
+
+    def setHovered(self, hovered):
+        if self.property("hovered") != hovered:
+            self.setProperty("hovered", hovered)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+    def _update_check(self):
+        self._check_label.setText("\u2713" if self._checked else "")
+
 
 class MainWindow(QWidget):
     """主窗口：无边框、自定义标题栏、工具栏、磁贴式分组"""
@@ -152,10 +244,15 @@ class MainWindow(QWidget):
         self.config = ConfigManager(config_path)
 
         # 无边框，保留最小化系统菜单（让任务栏图标能正常最小化）
-        self.setWindowFlags(
+        window_flags = (
             Qt.FramelessWindowHint | Qt.Window
             | Qt.WindowMinimizeButtonHint
         )
+        # 开启"隐藏到托盘"时以工具窗口形态启动：任务栏/Alt+Tab 中不显示
+        self._tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+        if self.config.close_to_tray and self._tray_available:
+            window_flags |= Qt.Tool
+        self.setWindowFlags(window_flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         # 窗口拖动
@@ -175,6 +272,11 @@ class MainWindow(QWidget):
         self._setting_geometry = False
         self._suppress_auto_minimize = False  # 弹系统对话框时，禁止自动最小化
 
+        # 系统托盘
+        self._tray_icon = None
+        self._force_quit = False  # 托盘菜单"退出"时置 True，确保真正退出
+        self._tray_notified = False  # 首次隐藏到托盘时提示一次
+
         # 目录完整路径（用于省略文本计算）
         self._dir_full_path = ""
 
@@ -193,9 +295,8 @@ class MainWindow(QWidget):
         self._connect_signals()
         self.setStyleSheet(GLOBAL_QSS)
 
-        # 启动时立即加载分组内容
-        if self.config.shortcut_dir:
-            self.groups_container.refresh()
+        # 启动时立即加载分组和快捷方式内容（未设置目录时也要渲染已保存的分组）
+        self.groups_container.refresh()
 
     def _init_ui(self):
         # 主布局
@@ -268,6 +369,9 @@ class MainWindow(QWidget):
         self.groups_container = GroupsContainer(self.config, self.main_widget)
         main_layout.addWidget(self.groups_container)
 
+        # 系统托盘（需在构建设置菜单前就绪，用于判断勾选项是否可用）
+        self._init_tray()
+
         # 设置下拉菜单
         self.settings_menu = QMenu(self)
         self.settings_menu.addAction("设置目录…", self._choose_directory)
@@ -279,6 +383,50 @@ class MainWindow(QWidget):
         self._dock_action_group = None  # 后面在 _init_dock_menu 中创建
         self._build_dock_menu()
         self.settings_menu.addMenu(self.dock_menu)
+
+        # 关闭时隐藏到托盘（对勾显示在文字右侧）
+        # 交互主体是标准 checkable QAction（走 QMenu 原生点击路径，保证
+        # 一点就生效）；TrayMenuItem 只是鼠标透明的显示组件。
+        self.close_to_tray_item = TrayMenuItem(
+            "关闭时隐藏到托盘", self.config.close_to_tray
+        )
+        self.close_to_tray_action = QWidgetAction(self)
+        self.close_to_tray_action.setDefaultWidget(self.close_to_tray_item)
+        self.close_to_tray_action.setCheckable(True)
+        self.close_to_tray_action.setChecked(self.config.close_to_tray)
+        # QAction 勾选变化 → 同步右侧对勾显示
+        self.close_to_tray_action.toggled.connect(self.close_to_tray_item.setChecked)
+        # QAction 被点击（QMenu 原生路径）→ 保存并重启
+        self.close_to_tray_action.triggered.connect(self._on_close_to_tray_triggered)
+        if self._tray_icon is None:
+            self.close_to_tray_action.setEnabled(False)
+            self.close_to_tray_action.setToolTip("当前系统不支持系统托盘")
+        self.settings_menu.addAction(self.close_to_tray_action)
+
+        # 开机自动启动（与托盘项同样式：文字靠左、对勾靠右；勾选状态以
+        # 注册表真实内容为准）
+        self.autostart_item = TrayMenuItem(
+            "开机自动启动", autostart.is_enabled()
+        )
+        self.autostart_action = QWidgetAction(self)
+        self.autostart_action.setDefaultWidget(self.autostart_item)
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.setChecked(autostart.is_enabled())
+        self.autostart_action.toggled.connect(self.autostart_item.setChecked)
+        self.autostart_action.triggered.connect(self._on_autostart_triggered)
+        if not autostart.is_supported():
+            self.autostart_action.setEnabled(False)
+            self.autostart_action.setToolTip("当前系统不支持开机自动启动")
+        self.settings_menu.addAction(self.autostart_action)
+
+        # hover 高亮：widget 鼠标透明收不到 hover，由菜单按鼠标位置同步
+        self._menu_check_items = [
+            (self.close_to_tray_action, self.close_to_tray_item),
+            (self.autostart_action, self.autostart_item),
+        ]
+        self.settings_menu.installEventFilter(self)
+        self.settings_menu.aboutToHide.connect(self._clear_menu_item_hover)
+
         self.settings_menu.addSeparator()
         self.settings_menu.addAction("使用说明", self._show_help)
         self.settings_btn.clicked.connect(self._show_settings_menu)
@@ -308,14 +456,15 @@ class MainWindow(QWidget):
         self.groups_container.shortcutRenamed.connect(self._on_shortcut_renamed)
 
     def changeEvent(self, event):
-        # 窗口失去激活时，如果焦点切到了其他程序的窗口，自动最小化
-        # 如果是本程序自己弹的对话框，不最小化
-        # 弹出系统对话框期间（_suppress_auto_minimize）也不最小化
+        # 窗口失去激活时，如果焦点切到了其他程序的窗口，自动收起
+        # 托盘模式下隐藏到托盘，否则最小化
+        # 如果是本程序自己弹的对话框，不收起
+        # 弹出系统对话框期间（_suppress_auto_minimize）也不收起
         if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
-            if not self._suppress_auto_minimize:
+            if not self._suppress_auto_minimize and self.isVisible():
                 active = QApplication.activeWindow()
                 if active is None:
-                    self.showMinimized()
+                    self.dock_away()
         super().changeEvent(event)
 
     # ---- 标题栏拖动 & 边缘缩放 ----
@@ -497,14 +646,254 @@ class MainWindow(QWidget):
         super().showEvent(event)
         # 首次显示后重新计算目录省略文本（此时布局已完成）
         self._update_dir_elided_text()
-        # 首次显示时应用停靠模式
-        if not event.spontaneous():
+        # 首次显示时应用停靠模式；任务栏热切换中的 hide/show 不算
+        if not event.spontaneous() and not getattr(
+                self, "_taskbar_switching", False):
             self._apply_dock_mode()
 
     def closeEvent(self, event):
-        """关闭时保存自由浮动时的窗口几何"""
+        """关闭窗口：开启"隐藏到托盘"时仅隐藏窗口，否则保存几何后退出"""
+        if (self.config.close_to_tray and self._tray_icon is not None
+                and not self._force_quit):
+            self._save_float_geometry()
+            event.ignore()
+            self.hide()
+            if not self._tray_notified:
+                self._tray_icon.showMessage(
+                    "dokodemo",
+                    "程序已隐藏到系统托盘，单击托盘图标可恢复，右键可退出。",
+                    QSystemTrayIcon.Information,
+                    3000
+                )
+                self._tray_notified = True
+            return
+        # 真正退出：保存几何后显式退出应用。
+        # 注意不能只依赖 quitOnLastWindowClosed——若程序以托盘模式启动
+        # （窗口带 Qt.Tool 标志），运行中取消勾选只改了 Win32 扩展样式，
+        # Qt 内部标志仍是 Tool，关闭它不会触发“最后一个窗口关闭”，
+        # 不显式 quit 会导致进程残留后台（无窗口、无托盘图标）。
         self._save_float_geometry()
-        super().closeEvent(event)
+        event.accept()
+        QApplication.quit()
+
+    # ---- 系统托盘 ----
+    def _init_tray(self):
+        """初始化系统托盘图标（系统不支持托盘时保持为 None）"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray_icon = None
+            return
+        self._tray_icon = QSystemTrayIcon(get_app_icon(), self)
+        self._tray_icon.setToolTip("dokodemo")
+
+        tray_menu = QMenu(self)
+        tray_menu.addAction("显示主界面", self._restore_from_tray)
+        tray_menu.addSeparator()
+        tray_menu.addAction("退出", self._quit_from_tray)
+        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+
+        # 仅在已开启"关闭隐藏到托盘"时常驻显示
+        if self.config.close_to_tray:
+            self._tray_icon.show()
+
+    def _clear_menu_item_hover(self):
+        """菜单隐藏时清除所有自定义勾选项的 hover 高亮"""
+        for _, item in self._menu_check_items:
+            item.setHovered(False)
+
+    def eventFilter(self, obj, event):
+        # 设置菜单中自定义勾选项的 hover 高亮（widget 鼠标透明，收不到 hover，
+        # 由菜单按当前鼠标位置统一同步）
+        if obj is self.settings_menu:
+            if event.type() == QEvent.MouseMove:
+                action = self.settings_menu.actionAt(event.pos())
+                for act, item in self._menu_check_items:
+                    item.setHovered(action is act and act.isEnabled())
+            elif event.type() == QEvent.Leave:
+                for _, item in self._menu_check_items:
+                    item.setHovered(False)
+        return super().eventFilter(obj, event)
+
+    def _on_autostart_triggered(self, checked):
+        """勾选/取消开机自动启动：写注册表，失败则回滚勾选"""
+        ok = autostart.enable() if checked else autostart.disable()
+        if ok:
+            return
+        # 写注册表失败：回滚 QAction 勾选与对勾显示
+        self.autostart_action.blockSignals(True)
+        self.autostart_action.setChecked(not checked)
+        self.autostart_action.blockSignals(False)
+        self.autostart_item.setChecked(not checked)
+        self._suppress_auto_minimize = True
+        try:
+            QMessageBox.warning(
+                self, "开机自动启动",
+                "设置失败，无法写入系统启动项，请检查系统权限后重试。"
+            )
+        finally:
+            self._suppress_auto_minimize = False
+
+    def _on_close_to_tray_triggered(self):
+        """QMenu 原生点击路径触发：保存设置并热切换任务栏条目（不重启）"""
+        checked = self.close_to_tray_action.isChecked()
+        self.settings_menu.close()
+        # 延迟到菜单关闭后执行；Win32 样式切换不重建窗口，无闪烁/焦点问题
+        QTimer.singleShot(0, lambda: self._commit_close_to_tray(checked))
+
+    def _commit_close_to_tray(self, checked):
+        """保存托盘模式：配置落盘、托盘图标显隐、任务栏条目热切换"""
+        self.config.close_to_tray = checked  # setter 内部立即写盘
+        if self._tray_icon is not None:
+            if checked:
+                self._tray_icon.show()
+            else:
+                self._tray_icon.hide()
+        self._set_taskbar_hidden(checked and self._tray_icon is not None)
+
+    def _set_taskbar_hidden(self, hidden):
+        """运行时切换任务栏/Alt+Tab 条目，不销毁重建窗口
+
+        Windows 上通过修改扩展窗口样式实现：
+        WS_EX_TOOLWINDOW → 任务栏隐藏；WS_EX_APPWINDOW → 任务栏显示。
+
+        必须严格按 Shell 要求的顺序操作：先隐藏窗口，再改扩展样式，
+        最后重新显示。仅改样式 + SWP_FRAMECHANGED 不会让任务栏刷新
+        ——特别是窗口以 Tool 样式启动（任务栏按钮从未被创建过）时，
+        Shell 不会凭空补建按钮，表现为“取消勾选后回不到任务栏”。
+
+        隐藏/显示必须走 Qt 自己的 hide()/show()（底层同样是
+        SW_HIDE/SW_SHOW，满足 Shell 要求），不能直接调 Win32
+        ShowWindow——后者绕过 Qt，会让 Qt 的鼠标悬停状态机与实际
+        窗口状态脱节，之后标题栏按钮的 :hover 全部失效（需要最小化
+        或重新激活窗口才恢复）。
+        """
+        if not _IS_WINDOWS:
+            # 非 Windows 平台回退到 Qt 标志方式（会重建窗口）
+            self._set_taskbar_hidden_qt(hidden)
+            return
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+        # 64 位系统需要 GetWindowLongPtrW；32 位回退 GetWindowLongW
+        if hasattr(user32, "GetWindowLongPtrW"):
+            get_long = user32.GetWindowLongPtrW
+            set_long = user32.SetWindowLongPtrW
+            get_long.restype = ctypes.c_void_p
+            set_long.restype = ctypes.c_void_p
+        else:
+            get_long = user32.GetWindowLongW
+            set_long = user32.SetWindowLongW
+            get_long.restype = ctypes.c_long
+            set_long.restype = ctypes.c_long
+        get_long.argtypes = [wintypes.HWND, ctypes.c_int]
+        set_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+
+        style = get_long(hwnd, _GWL_EXSTYLE) or 0
+        is_tool = bool(style & _WS_EX_TOOLWINDOW)
+        if hidden == is_tool:
+            return
+
+        # 先确保设置菜单（exec_ 模态弹出）已完成关闭收尾，避免鼠标捕获
+        # 残留在已关闭的菜单上
+        for popup in QApplication.topLevelWidgets():
+            try:
+                if isinstance(popup, QMenu) and popup.isVisible():
+                    popup.close()
+            except RuntimeError:
+                pass
+        grabber = QWidget.mouseGrabber()
+        if grabber is not None and not grabber.isVisible():
+            grabber.releaseMouse()
+        QApplication.processEvents()
+
+        was_visible = self.isVisible()
+        geom_before = self.saveGeometry()
+        # 1) 用 Qt 接口隐藏（底层即 SW_HIDE）：Qt 会同步清理鼠标悬停/捕获
+        #    等内部状态。临时关闭“最后窗口关闭即退出”，防止 hide 主窗口
+        #    时进程意外退出。
+        prev_quit_on_close = QApplication.quitOnLastWindowClosed()
+        QApplication.setQuitOnLastWindowClosed(False)
+        self._taskbar_switching = True
+        try:
+            if was_visible:
+                self.hide()
+
+            # 2) 在窗口隐藏期间修改扩展窗口样式
+            if hidden:
+                style |= _WS_EX_TOOLWINDOW
+                style &= ~_WS_EX_APPWINDOW
+            else:
+                style &= ~_WS_EX_TOOLWINDOW
+                style |= _WS_EX_APPWINDOW
+            set_long(hwnd, _GWL_EXSTYLE, style)
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER
+                | _SWP_NOACTIVATE | _SWP_FRAMECHANGED
+            )
+
+            # 3) 用 Qt 接口重新显示（底层即 SW_SHOW）：Shell 据此移除/
+            #    新建任务栏按钮，Qt 同时重建鼠标悬停状态；句柄不变。
+            if was_visible:
+                self.show()
+                if bytes(self.saveGeometry()) != bytes(geom_before):
+                    self.restoreGeometry(geom_before)
+                self.raise_()
+                self.activateWindow()
+        finally:
+            self._taskbar_switching = False
+            QApplication.setQuitOnLastWindowClosed(prev_quit_on_close)
+
+    def _set_taskbar_hidden_qt(self, hidden):
+        """非 Windows 回退：setWindowFlags 切换 Qt.Tool（会重建窗口）"""
+        has_tool = (self.windowFlags() & Qt.Tool) == Qt.Tool
+        if hidden == has_tool:
+            return
+        was_visible = self.isVisible()
+        flags = self.windowFlags()
+        if hidden:
+            flags |= Qt.Tool
+        else:
+            flags &= ~Qt.Tool
+        self.setWindowFlags(flags)
+        if was_visible:
+            if self._is_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def dock_away(self):
+        """收起窗口：托盘模式下隐藏到托盘，否则最小化到任务栏"""
+        if self.config.close_to_tray and self._tray_icon is not None:
+            self.hide()
+        else:
+            self.showMinimized()
+
+    def _restore_from_tray(self):
+        """从托盘恢复并激活窗口"""
+        self.showNormal()
+        if self._is_maximized:
+            self.showMaximized()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        """单击或双击托盘图标时恢复窗口"""
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._restore_from_tray()
+
+    def _quit_from_tray(self):
+        """托盘菜单"退出"：真正退出程序"""
+        self._force_quit = True
+        self._save_float_geometry()
+        QApplication.quit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -573,7 +962,10 @@ class MainWindow(QWidget):
             ("居中", DOCK_MODE_CENTER),
             ("靠左", DOCK_MODE_LEFT),
             ("靠右", DOCK_MODE_RIGHT),
+            ("靠上", DOCK_MODE_TOP),
+            ("靠下", DOCK_MODE_BOTTOM),
             ("左下", DOCK_MODE_BOTTOM_LEFT),
+            ("右下", DOCK_MODE_BOTTOM_RIGHT),
         ]
         current = self.config.dock_mode
         for text, mode in modes:
@@ -645,12 +1037,42 @@ class MainWindow(QWidget):
             self.showNormal()
             self.setGeometry(x, y, w, h)
 
+        elif mode == DOCK_MODE_TOP:
+            self._is_maximized = False
+            self._update_maximized_state()
+            w = screen.width()
+            h = screen.height() // 3
+            x = screen.x()
+            y = screen.y()
+            self.showNormal()
+            self.setGeometry(x, y, w, h)
+
+        elif mode == DOCK_MODE_BOTTOM:
+            self._is_maximized = False
+            self._update_maximized_state()
+            w = screen.width()
+            h = screen.height() // 3
+            x = screen.x()
+            y = screen.y() + screen.height() - h
+            self.showNormal()
+            self.setGeometry(x, y, w, h)
+
         elif mode == DOCK_MODE_BOTTOM_LEFT:
             self._is_maximized = False
             self._update_maximized_state()
             w = screen.width() // 3
             h = screen.height() * 2 // 3
             x = screen.x()
+            y = screen.y() + screen.height() - h
+            self.showNormal()
+            self.setGeometry(x, y, w, h)
+
+        elif mode == DOCK_MODE_BOTTOM_RIGHT:
+            self._is_maximized = False
+            self._update_maximized_state()
+            w = screen.width() // 3
+            h = screen.height() * 2 // 3
+            x = screen.x() + screen.width() - w
             y = screen.y() + screen.height() - h
             self.showNormal()
             self.setGeometry(x, y, w, h)

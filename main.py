@@ -18,13 +18,20 @@ _set_app_id()
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QTimer
 from PyQt5.QtNetwork import QLocalServer, QLocalSocket
 
 from src.main_window import MainWindow
 from src.app_icon import get_app_icon
+from src import autostart
 
 # 单实例本地服务名
 _SINGLE_INSTANCE_SERVER = "dokodemo_SingleInstance"
+
+# 开机自启（非托盘模式）下，界面正常展示后延迟多久再最小化。
+# 开机时桌面/任务栏尚在初始化，直接以最小化状态创建窗口在真实开机
+# 环境不可靠；先正常显示、等环境稳定后走与“最小化按钮”相同的路径。
+_AUTOSTART_MINIMIZE_DELAY_MS = 800
 
 
 def _get_resource_path(relative_path):
@@ -79,17 +86,36 @@ def main():
 
     window = MainWindow(config_path)
     window.setWindowTitle("dokodemo")
-    window.show()
 
-    # ---- 点击快捷方式后最小化窗口 ----
+    # ---- 首次显示策略 ----
+    # 手动启动：正常显示界面。
+    # 开机自启（注册表命令带 --autostart）：
+    #   托盘模式 → 不显示主窗口，只留托盘图标；
+    #   非托盘   → 先正常显示，等桌面环境稳定后再最小化。
+    autostarted = autostart.was_autostarted()
+    hide_to_tray = (
+        window.config.close_to_tray and window._tray_icon is not None)
+
+    if autostarted and hide_to_tray:
+        pass  # 托盘图标已在窗口构造时显示，主窗口保持隐藏
+    else:
+        window.show()
+        if autostarted:
+            # 与点击标题栏最小化按钮走同一条 showMinimized() 路径
+            QTimer.singleShot(
+                _AUTOSTART_MINIMIZE_DELAY_MS,
+                lambda: window.showMinimized() if window.isVisible() else None
+            )
+
+    # ---- 点击快捷方式后收起窗口（托盘模式隐藏到托盘，否则最小化） ----
     def _on_shortcut_launched():
-        window.showMinimized()
+        window.dock_away()
 
     window.groups_container.shortcutLaunched.connect(_on_shortcut_launched)
 
-    # ---- 点击空白区域最小化窗口 ----
+    # ---- 点击空白区域收起窗口 ----
     def _on_blank_clicked():
-        window.showMinimized()
+        window.dock_away()
 
     window.groups_container.blankClicked.connect(_on_blank_clicked)
 
