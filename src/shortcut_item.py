@@ -98,10 +98,20 @@ class ShortcutItem(QWidget):
             return
         self._icon_loaded = True
         try:
+            # 防止快速刷新时对象已被删除导致崩溃
+            if self._is_deleted():
+                return
             pixmap = get_shortcut_icon(self.shortcut_path, self.icon_size)
+            if self._is_deleted():
+                return
             self.icon_label.setPixmap(pixmap)
         except Exception:
             pass
+
+    def _is_deleted(self):
+        """检查 C++ 对象是否已被删除（快速刷新时旧 item 会被 deleteLater）"""
+        import sip
+        return sip.isdeleted(self) or sip.isdeleted(self.icon_label)
 
     def _update_name(self):
         """绘制两行省略的名称"""

@@ -271,6 +271,8 @@ class MainWindow(QWidget):
         # 标记：是否正在由程序主动设置窗口几何（避免 resizeEvent/moveEvent 误判为用户手动调整）
         self._setting_geometry = False
         self._suppress_auto_minimize = False  # 弹系统对话框时，禁止自动最小化
+        self._refreshing = False  # 刷新中标志，防止连点崩溃
+        self._first_shown = False  # 首次显示完成前，不保存窗口几何（避免初始 resize 覆盖配置）
 
         # 系统托盘
         self._tray_icon = None
@@ -650,6 +652,7 @@ class MainWindow(QWidget):
         if not event.spontaneous() and not getattr(
                 self, "_taskbar_switching", False):
             self._apply_dock_mode()
+            self._first_shown = True
 
     def closeEvent(self, event):
         """关闭窗口：开启"隐藏到托盘"时仅隐藏窗口，否则保存几何后退出"""
@@ -914,6 +917,8 @@ class MainWindow(QWidget):
         if self._is_maximized:
             return
         if self.config.dock_mode == DOCK_MODE_FLOAT:
+            # 自由模式下手动调整：保存新尺寸
+            self._save_float_geometry()
             return
         # 切回浮动模式
         self.config.dock_mode = DOCK_MODE_FLOAT
@@ -1102,6 +1107,8 @@ class MainWindow(QWidget):
 
     def _save_float_geometry(self):
         """保存自由浮动时的窗口几何位置"""
+        if not self._first_shown:
+            return
         if self.config.dock_mode == DOCK_MODE_FLOAT and not self._is_maximized:
             g = self.geometry()
             self.config.window_geometry = [g.x(), g.y(), g.width(), g.height()]
@@ -1179,24 +1186,33 @@ class MainWindow(QWidget):
 
     def _refresh_shortcuts(self):
         """刷新快捷方式列表"""
-        if not self.config.shortcut_dir:
-            QMessageBox.information(self, "提示", "请先选择快捷方式目录")
+        if self._refreshing:
             return
+        self._refreshing = True
+        self._suppress_auto_minimize = True  # 刷新期间抑制自动最小化
+        try:
+            if not self.config.shortcut_dir:
+                QMessageBox.information(self, "提示", "请先选择快捷方式目录")
+                return
 
-        shortcuts = scan_shortcuts(self.config.shortcut_dir)
-        added, removed = self.config.sync_shortcuts(shortcuts)
+            shortcuts = scan_shortcuts(self.config.shortcut_dir)
+            added, removed = self.config.sync_shortcuts(shortcuts)
 
-        # 清空图标缓存
-        clear_icon_cache()
+            # 清空图标缓存
+            clear_icon_cache()
 
-        # 刷新界面
-        self.groups_container.refresh()
+            # 刷新界面
+            self.groups_container.refresh()
 
-        if added > 0 or removed > 0:
-            QMessageBox.information(
-                self, "刷新完成",
-                f"新增 {added} 个快捷方式，移除 {removed} 个快捷方式"
-            )
+            if added > 0 or removed > 0:
+                QMessageBox.information(
+                    self, "刷新完成",
+                    f"新增 {added} 个快捷方式，移除 {removed} 个快捷方式"
+                )
+        finally:
+            self._refreshing = False
+            # 延迟一帧再恢复，确保 deleteLater 的 widget 清理完
+            QTimer.singleShot(0, lambda: setattr(self, '_suppress_auto_minimize', False))
 
     # ---- 分组管理 ----
     def _add_group(self):

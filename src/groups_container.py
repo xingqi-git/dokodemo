@@ -95,6 +95,8 @@ class GroupsContainer(QScrollArea):
 
         # 清空分组
         for gw in self._group_widgets:
+            # 先隐藏再删除，避免 setParent(None) 变成独立窗口闪一下
+            gw.hide()
             gw.setParent(None)
             gw.deleteLater()
         self._group_widgets.clear()
