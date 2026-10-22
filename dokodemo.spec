@@ -159,6 +159,17 @@ _stdlib_excludes = [
     'imghdr',
     'sndhdr',
     'pyexpat',
+    # decimal/_decimal：项目不用高精度十进制，110KB
+    'decimal',
+    '_decimal',
+    # lzma/_lzma：项目不用 LZMA 压缩，88KB
+    'lzma',
+    '_lzma',
+    # bz2/_bz2：项目不用 BZ2 压缩，50KB
+    'bz2',
+    '_bz2',
+    # _wmi：WMI 扩展模块，项目不用，30KB
+    '_wmi',
 ]
 
 excludes = _pyqt5_excludes + _stdlib_excludes
@@ -268,7 +279,7 @@ def _is_keep_qm(dest_path):
 a.datas = [d for d in a.datas if _is_keep_qm(d[0])]
 
 # ── 过滤 Qt 插件中冗余的图片格式、平台插件 ──
-_KEEP_IMAGE_FORMATS = ('qico', 'qjpeg', 'qgif', 'qpng')
+_KEEP_IMAGE_FORMATS = ('qico', 'qpng')
 _KEEP_PLATFORMS = ('qwindows',)
 _KEEP_STYLES = ()
 
@@ -355,7 +366,7 @@ exe = EXE(
     name='dokodemo',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
+    strip=False,
     upx=True,
     console=False,
     disable_windowed_traceback=False,
