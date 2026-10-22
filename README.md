@@ -48,8 +48,10 @@ python main.py
 ### 打包为 exe
 
 ```bash
-pyinstaller --noconsole --icon=app.ico --name=dokodemo --additional-hooks-dir=hooks main.py
+pyinstaller dokodemo.spec --clean
 ```
+
+打包产物在 `dist/dokodemo/` 目录下。所有打包参数（图标、无控制台、hooks 目录、体积优化等）均已在 `dokodemo.spec` 中配置。
 
 ---
 
