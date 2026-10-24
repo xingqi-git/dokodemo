@@ -729,11 +729,11 @@ class MainWindow(QWidget):
         self._tray_icon = QSystemTrayIcon(get_app_icon(), self)
         self._tray_icon.setToolTip("dokodemo")
 
-        tray_menu = QMenu(self)
-        tray_menu.addAction("显示主界面", self._restore_from_tray)
-        tray_menu.addSeparator()
-        tray_menu.addAction("退出", self._quit_from_tray)
-        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_menu = QMenu(self)
+        self._tray_menu.addAction("显示主界面", self._restore_from_tray)
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("退出", self._quit_from_tray)
+        self._tray_icon.setContextMenu(self._tray_menu)
         self._tray_icon.activated.connect(self._on_tray_activated)
 
         # 仅在已开启"关闭隐藏到托盘"时常驻显示
@@ -925,29 +925,36 @@ class MainWindow(QWidget):
     def _check_click_outside(self):
         """兜底轮询：窗口可见时每 50ms 查一次鼠标按键边沿。
 
-        思路比依赖 Windows Shell 激活事件链（changeEvent/WM_ACTIVATE）
-        更直接、更可靠——只在鼠标按键"从未按下→按下"的跳变瞬间触发。
+        三层失活监听中的 click-outside 轮询（最可靠，完全绕开 Windows Shell
+        激活事件链问题）：只在鼠标按键"从未按下→按下"的跳变瞬间触发。
         如果此时鼠标光标在我们窗口范围外，立即 dock_away。
-        正常场景下 changeEvent/nativeEvent 毫秒级响应，本轮询只在 Shell
-        交互破坏激活追踪链时兜底。
+
+        同时还承担一个辅助职责：从托盘恢复后 _force_foreground 可能被
+        Windows 前台锁定拦了，窗口 show 了但没真正到前台。此时 suppress
+        保持 True 防止被误收，本函数一旦检测到**我们终于成了前台**，立即
+        清除 suppress——之后三层监听都正常工作。
         """
         if not self.isVisible():
             return
-        # 从托盘恢复期间抑制（避免刚 show 完就被当成外部点击收回去）
         if self._suppress_auto_minimize:
-            # 恢复抑制状态下顺便清掉边沿缓存，避免恢复完误触发
+            # 抑制期间顺便检查我们有没有终于拿到前台
+            try:
+                fg = ctypes.windll.user32.GetForegroundWindow()
+                if fg and int(fg) == int(self.winId()):
+                    self._suppress_auto_minimize = False
+            except Exception:
+                pass
+            # 清空边沿缓存，避免抑制期间鼠标按下被记住、抑制清除后误触发
             self._mouse_down_edge = {"L": False, "R": False}
             return
         try:
             user32 = ctypes.windll.user32
-            # GetAsyncKeyState: 返回值最高位=1 表示当前按下，最低位=1 表示自上次调用以来按下过
             for vk, key in ((0x01, "L"), (0x02, "R")):  # VK_LBUTTON=1, VK_RBUTTON=2
                 state = user32.GetAsyncKeyState(vk)
-                is_down = bool(state & 0x8000)   # 当前是否按下
+                is_down = bool(state & 0x8000)
                 was_down = self._mouse_down_edge[key]
                 self._mouse_down_edge[key] = is_down
                 if is_down and not was_down:
-                    # 边沿：从"未按下"跳到"按下"——判断是不是在窗口外
                     if self._click_is_outside():
                         self.dock_away()
                         self._mouse_down_edge = {"L": False, "R": False}
@@ -978,81 +985,85 @@ class MainWindow(QWidget):
             return False
 
     def _force_foreground(self):
-        """强制把窗口拉到 Windows 前台，绕过 Shell 前台锁定。
+        """把主窗口真正顶到前台（点托盘图标呼出时用）。
 
-        PyQt 的 activateWindow() 在 Windows Shell（开始菜单、托盘）交互
-        后会被静默拒绝——窗口 show 了但没真正持有前台。这里用组合手段：
-        1. AllowSetForegroundWindow(-1) 声明自己有任意前台设置权；
-        2. AttachThreadInput 把当前线程输入附加到 Shell 前台线程上；
-        3. keybd_event 模拟一次 AltUp/AltDown——让 Windows 认为本线程刚
-           收到了输入事件，立即解除前台锁定；
-        4. ShowWindow(SW_SHOW) + BringWindowToTop + SetForegroundWindow；
-        5. SwitchToThisWindow（Windows 11 上最有效的前台切换 API）。
-        其中 AllowSetForegroundWindow 在非前台线程上调用会静默失败，
-        keybd_event + SetForegroundWindow 才是真正的绕过手段。
+        左键点托盘图标后 Windows 不给我们进程"前台权限"——点击发生在
+        Explorer 的托盘图标上，不算我们窗口收到的输入，所以直接调
+        SetForegroundWindow 会被系统拒绝。这就是右键菜单"显示主界面"
+        能到最前（菜单是我们进程的窗口，点它=权限到手）、左键却不行
+        的根本原因。
+
+        两个手段，全部同步执行，无任何延时：
+        ① TOPMOST→立刻 NOTOPMOST：纯 z-order 操作，不需要权限，
+           把窗口抬到所有普通窗口的最上面，且不会持续霸屏置顶。
+        ② AttachThreadInput：把我们的输入队列临时挂到当前前台窗口
+           的线程上，借到前台权限后 SetForegroundWindow 拿真正的
+           激活和键盘焦点。
         """
         try:
             user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
             hwnd = int(self.winId())
-            # 1. 声明前台设置权
-            try:
-                user32.AllowSetForegroundWindow(-1)  # ASFW_ANY = -1
-            except Exception:
-                pass
-            # 2. AttachThreadInput 到当前前台线程（Shell 前台时是 explorer）
-            foreground = user32.GetForegroundWindow()
-            foreground_tid = user32.GetWindowThreadProcessId(
-                foreground, wintypes.LPID(0))
-            my_tid = kernel32.GetCurrentThreadId()
+            # 关键：HWND_TOPMOST/HWND_NOTOPMOST 必须用 c_void_p 包装！
+            # 64 位 Python 下直接传 -1/-2 会被截成 32 位零扩展值，
+            # SetWindowPos 拿到非法句柄后静默失败——之前所有"置顶"
+            # 补丁全部不生效就是这个原因。
+            HWND_TOPMOST = ctypes.c_void_p(-1)
+            HWND_NOTOPMOST = ctypes.c_void_p(-2)
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOACTIVATE = 0x0010
+            # ① 抬 z-order（NOTOPMOST 会把窗口放在全部非置顶窗口的
+            #    最上面，效果=抬到最前，但不会盖住后续新弹的窗口）
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                SWP_NOSIZE | SWP_NOMOVE)
+            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+            # ② 借前台权限：临时把输入队列挂到当前前台窗口的线程上
+            user32.GetForegroundWindow.restype = ctypes.c_void_p
+            fg = user32.GetForegroundWindow()
             attached = False
-            if foreground_tid and foreground_tid != my_tid:
-                user32.AttachThreadInput(foreground_tid, my_tid, True)
-                attached = True
+            my_tid = fg_tid = 0
+            if fg and int(fg) != hwnd:
+                fg_tid = user32.GetWindowThreadProcessId(
+                    ctypes.c_void_p(fg), None)
+                my_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+                if fg_tid and fg_tid != my_tid:
+                    attached = bool(user32.AttachThreadInput(
+                        my_tid, fg_tid, True))
             try:
-                user32.ShowWindow(hwnd, 5)       # SW_SHOW
-                user32.BringWindowToTop(hwnd)
-                # 3. 模拟一次 Alt 键（没实际副作用）让 Windows 解除锁定
-                user32.keybd_event(0x12, 0, 2, 0)    # VK_MENU(Alt) KEYUP
                 user32.SetForegroundWindow(hwnd)
-                # 4. SwitchToThisWindow（Windows 11 最可靠）
-                STW_ALTTABMASK = 0x00
-                try:
-                    user32.SwitchToThisWindow(hwnd, STW_ALTTABMASK)
-                except Exception:
-                    pass
+                user32.BringWindowToTop(hwnd)
             finally:
                 if attached:
-                    user32.AttachThreadInput(foreground_tid, my_tid, False)
+                    user32.AttachThreadInput(my_tid, fg_tid, False)
         except Exception:
-            # Win32 调用失败静默降级
             pass
 
     def _restore_from_tray(self):
-        """从托盘恢复并激活窗口"""
-        # 恢复期间抑制自动收起：show() 完成后立即解除（300ms 足够跨过
-        # Win32 show/激活时序，之后 click-outside/changeEvent/nativeEvent
-        # 三层监听都能正常工作）。同时抑制也能避免用户点托盘图标那个
-        # 点击动作本身被 click-outside 轮询误认为外部点击。
-        self._suppress_auto_minimize = True
+        """从托盘恢复：show 出来 + 强制顶到最前（无任何延时/计时器）"""
         self.showNormal()
         if self._is_maximized:
             self.showMaximized()
         self.show()
         self.raise_()
         self.activateWindow()
-        # Win32 强制前台组合拳，绕过 Shell 前台锁定
         self._force_foreground()
-        QTimer.singleShot(300, lambda: setattr(
-            self, '_suppress_auto_minimize', False))
+        # 边沿缓存同步成鼠标"当前"真实状态：若用户点托盘图标的手
+        # 还没松开，轮询不会把这次按住误判成新的"窗口外点击"
+        try:
+            user32 = ctypes.windll.user32
+            self._mouse_down_edge = {
+                "L": bool(user32.GetAsyncKeyState(0x01) & 0x8000),
+                "R": bool(user32.GetAsyncKeyState(0x02) & 0x8000),
+            }
+        except Exception:
+            self._mouse_down_edge = {"L": False, "R": False}
 
     def _on_tray_activated(self, reason):
-        """单击或双击托盘图标时切换窗口显隐（避免点击托盘被窗口外点击轮询误判）"""
+        """左键/双击托盘图标：和右键菜单"显示主界面"完全同一条路径，
+        无延时、无 popup 把戏。_force_foreground 负责解决前台权限。"""
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            if self.isVisible() and not self.isMinimized():
-                self.dock_away()
-            else:
-                self._restore_from_tray()
+            self._restore_from_tray()
 
     def _quit_from_tray(self):
         """托盘菜单"退出"：真正退出程序"""
