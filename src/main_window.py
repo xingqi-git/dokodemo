@@ -274,6 +274,17 @@ class MainWindow(QWidget):
         self._refreshing = False  # 刷新中标志，防止连点崩溃
         self._first_shown = False  # 首次显示完成前，不保存窗口几何（避免初始 resize 覆盖配置）
 
+        # 窗口外点击轮询（兜底，彻底绕开 Windows Shell 激活事件链问题）。
+        # 思路比依赖激活事件更直接：只要鼠标按键在窗口范围外被按下
+        # （左/右键），立即 dock_away。GetAsyncKeyState 做边沿检测
+        # （只响应按下瞬间，按住不重复收），GetWindowRect 拿窗口边界
+        # （比 Qt geometry 更准，含阴影边框）。正常场景下 changeEvent/
+        # nativeEvent 仍然毫秒级触发 dock_away，轮询只兜底 Shell 场景。
+        self._fg_poll_timer = QTimer(self)
+        self._fg_poll_timer.setInterval(50)
+        self._fg_poll_timer.timeout.connect(self._check_click_outside)
+        self._mouse_down_edge = {"L": False, "R": False}  # 边沿缓存
+
         # 系统托盘
         self._tray_icon = None
         self._force_quit = False  # 托盘菜单"退出"时置 True，确保真正退出
@@ -458,16 +469,36 @@ class MainWindow(QWidget):
         self.groups_container.shortcutRenamed.connect(self._on_shortcut_renamed)
 
     def changeEvent(self, event):
-        # 窗口失去激活时，如果焦点切到了其他程序的窗口，自动收起
-        # 托盘模式下隐藏到托盘，否则最小化
-        # 如果是本程序自己弹的对话框，不收起
-        # 弹出系统对话框期间（_suppress_auto_minimize）也不收起
+        """Qt 层激活变化监听：毫秒级响应正常场景下的窗口失活。
+
+        这是三层失活监听中的 Qt 层，正常点外部（任务栏、其他程序等）时
+        比 50ms 轮询快得多。但 Windows Shell 交互后 Qt 的激活追踪会坏，
+        此时靠 nativeEvent 和 click-outside 轮询兜底。
+        """
         if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
             if not self._suppress_auto_minimize and self.isVisible():
-                active = QApplication.activeWindow()
-                if active is None:
-                    self.dock_away()
+                self.dock_away()
         super().changeEvent(event)
+
+    def nativeEvent(self, eventType, message):
+        """Win32 原生层激活变化监听：比 Qt changeEvent 更靠近操作系统。
+
+        三层失活监听中的原生层，正常场景下和 changeEvent 并行触发，
+        同样毫秒级响应。正常情况下它比 Qt 事件更早到达。"""
+        # PyQt5 原生 Windows 消息的 eventType 是 b"windows_generic_MSG"
+        if eventType == b"windows_generic_MSG":
+            try:
+                msg = ctypes.cast(int(message),
+                                  ctypes.POINTER(wintypes.MSG)).contents
+                if msg.message == 0x0006:  # WM_ACTIVATE
+                    lo_word = msg.wParam & 0xFFFF  # 0=WA_INACTIVE
+                    if lo_word == 0:
+                        if (not self._suppress_auto_minimize
+                                and self.isVisible()):
+                            self.dock_away()
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
     # ---- 标题栏拖动 & 边缘缩放 ----
     def _hit_test_edge(self, pos):
@@ -653,6 +684,16 @@ class MainWindow(QWidget):
                 self, "_taskbar_switching", False):
             self._apply_dock_mode()
             self._first_shown = True
+        # 窗口可见就启动窗口外点击轮询（50ms 查一次鼠标边沿），
+        # 作为 Shell 交互后 changeEvent/nativeEvent 都失效时的兜底
+        if not self._fg_poll_timer.isActive():
+            self._fg_poll_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # 窗口隐藏/最小化后停止轮询
+        if self._fg_poll_timer.isActive():
+            self._fg_poll_timer.stop()
 
     def closeEvent(self, event):
         """关闭窗口：开启"隐藏到托盘"时仅隐藏窗口，否则保存几何后退出"""
@@ -873,24 +914,145 @@ class MainWindow(QWidget):
 
     def dock_away(self):
         """收起窗口：托盘模式下隐藏到托盘，否则最小化到任务栏"""
+        # 停止前台轮询（窗口即将 hide/minimize，无需再查）
+        if self._fg_poll_timer.isActive():
+            self._fg_poll_timer.stop()
         if self.config.close_to_tray and self._tray_icon is not None:
             self.hide()
         else:
             self.showMinimized()
 
+    def _check_click_outside(self):
+        """兜底轮询：窗口可见时每 50ms 查一次鼠标按键边沿。
+
+        思路比依赖 Windows Shell 激活事件链（changeEvent/WM_ACTIVATE）
+        更直接、更可靠——只在鼠标按键"从未按下→按下"的跳变瞬间触发。
+        如果此时鼠标光标在我们窗口范围外，立即 dock_away。
+        正常场景下 changeEvent/nativeEvent 毫秒级响应，本轮询只在 Shell
+        交互破坏激活追踪链时兜底。
+        """
+        if not self.isVisible():
+            return
+        # 从托盘恢复期间抑制（避免刚 show 完就被当成外部点击收回去）
+        if self._suppress_auto_minimize:
+            # 恢复抑制状态下顺便清掉边沿缓存，避免恢复完误触发
+            self._mouse_down_edge = {"L": False, "R": False}
+            return
+        try:
+            user32 = ctypes.windll.user32
+            # GetAsyncKeyState: 返回值最高位=1 表示当前按下，最低位=1 表示自上次调用以来按下过
+            for vk, key in ((0x01, "L"), (0x02, "R")):  # VK_LBUTTON=1, VK_RBUTTON=2
+                state = user32.GetAsyncKeyState(vk)
+                is_down = bool(state & 0x8000)   # 当前是否按下
+                was_down = self._mouse_down_edge[key]
+                self._mouse_down_edge[key] = is_down
+                if is_down and not was_down:
+                    # 边沿：从"未按下"跳到"按下"——判断是不是在窗口外
+                    if self._click_is_outside():
+                        self.dock_away()
+                        self._mouse_down_edge = {"L": False, "R": False}
+                        return
+        except Exception:
+            pass
+
+    def _click_is_outside(self):
+        """判断当前鼠标光标是否在本窗口的 Win32 矩形范围外。
+
+        用 Win32 GetWindowRect 而非 Qt geometry——Qt 的 geometry 只算客户区，
+        且在无边框窗口下偶尔不准；GetWindowRect 返回的是带阴影边框的真实
+        屏幕坐标，命中测试更准确。
+        """
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            # 拿窗口矩形
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return False
+            # 拿鼠标位置
+            point = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(point))
+            return not (rect.left <= point.x < rect.right
+                        and rect.top <= point.y < rect.bottom)
+        except Exception:
+            return False
+
+    def _force_foreground(self):
+        """强制把窗口拉到 Windows 前台，绕过 Shell 前台锁定。
+
+        PyQt 的 activateWindow() 在 Windows Shell（开始菜单、托盘）交互
+        后会被静默拒绝——窗口 show 了但没真正持有前台。这里用组合手段：
+        1. AllowSetForegroundWindow(-1) 声明自己有任意前台设置权；
+        2. AttachThreadInput 把当前线程输入附加到 Shell 前台线程上；
+        3. keybd_event 模拟一次 AltUp/AltDown——让 Windows 认为本线程刚
+           收到了输入事件，立即解除前台锁定；
+        4. ShowWindow(SW_SHOW) + BringWindowToTop + SetForegroundWindow；
+        5. SwitchToThisWindow（Windows 11 上最有效的前台切换 API）。
+        其中 AllowSetForegroundWindow 在非前台线程上调用会静默失败，
+        keybd_event + SetForegroundWindow 才是真正的绕过手段。
+        """
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hwnd = int(self.winId())
+            # 1. 声明前台设置权
+            try:
+                user32.AllowSetForegroundWindow(-1)  # ASFW_ANY = -1
+            except Exception:
+                pass
+            # 2. AttachThreadInput 到当前前台线程（Shell 前台时是 explorer）
+            foreground = user32.GetForegroundWindow()
+            foreground_tid = user32.GetWindowThreadProcessId(
+                foreground, wintypes.LPID(0))
+            my_tid = kernel32.GetCurrentThreadId()
+            attached = False
+            if foreground_tid and foreground_tid != my_tid:
+                user32.AttachThreadInput(foreground_tid, my_tid, True)
+                attached = True
+            try:
+                user32.ShowWindow(hwnd, 5)       # SW_SHOW
+                user32.BringWindowToTop(hwnd)
+                # 3. 模拟一次 Alt 键（没实际副作用）让 Windows 解除锁定
+                user32.keybd_event(0x12, 0, 2, 0)    # VK_MENU(Alt) KEYUP
+                user32.SetForegroundWindow(hwnd)
+                # 4. SwitchToThisWindow（Windows 11 最可靠）
+                STW_ALTTABMASK = 0x00
+                try:
+                    user32.SwitchToThisWindow(hwnd, STW_ALTTABMASK)
+                except Exception:
+                    pass
+            finally:
+                if attached:
+                    user32.AttachThreadInput(foreground_tid, my_tid, False)
+        except Exception:
+            # Win32 调用失败静默降级
+            pass
+
     def _restore_from_tray(self):
         """从托盘恢复并激活窗口"""
+        # 恢复期间抑制自动收起：show() 完成后立即解除（300ms 足够跨过
+        # Win32 show/激活时序，之后 click-outside/changeEvent/nativeEvent
+        # 三层监听都能正常工作）。同时抑制也能避免用户点托盘图标那个
+        # 点击动作本身被 click-outside 轮询误认为外部点击。
+        self._suppress_auto_minimize = True
         self.showNormal()
         if self._is_maximized:
             self.showMaximized()
         self.show()
         self.raise_()
         self.activateWindow()
+        # Win32 强制前台组合拳，绕过 Shell 前台锁定
+        self._force_foreground()
+        QTimer.singleShot(300, lambda: setattr(
+            self, '_suppress_auto_minimize', False))
 
     def _on_tray_activated(self, reason):
-        """单击或双击托盘图标时恢复窗口"""
+        """单击或双击托盘图标时切换窗口显隐（避免点击托盘被窗口外点击轮询误判）"""
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            self._restore_from_tray()
+            if self.isVisible() and not self.isMinimized():
+                self.dock_away()
+            else:
+                self._restore_from_tray()
 
     def _quit_from_tray(self):
         """托盘菜单"退出"：真正退出程序"""
@@ -1145,7 +1307,12 @@ class MainWindow(QWidget):
             "4. 可创建分组，把图标拖进分组分类管理\n"
             "5. 点击图标启动程序，窗口自动最小化"
         )
-        QMessageBox.information(self, "使用说明", text)
+        # 抑制弹窗期间的自动收起（QMessageBox 模态会让主窗口失活）
+        self._suppress_auto_minimize = True
+        try:
+            QMessageBox.information(self, "使用说明", text)
+        finally:
+            self._suppress_auto_minimize = False
 
     # ---- 目录管理 ----
     def _choose_directory(self):
