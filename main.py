@@ -54,6 +54,10 @@ def _show_window(window):
 
 def main():
     app = QApplication(sys.argv)
+    # 托盘应用：退出只走显式路径（closeEvent / 托盘菜单"退出"）。
+    # 否则主窗口藏在托盘时若弹出对话框（如分组删除确认），用户关闭
+    # 对话框会被 Qt 当成"最后一个可见窗口关闭"而直接退出整个程序。
+    app.setQuitOnLastWindowClosed(False)
 
     # ---- 单实例检测 ----
     # 先尝试连接已有实例

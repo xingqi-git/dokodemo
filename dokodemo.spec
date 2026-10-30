@@ -19,6 +19,47 @@ dokodemo 打包配置文件（PyInstaller 6.x，体积深度优化版）
 """
 import os
 
+# ── 版本号：单一来源 ─────────────────────────────────
+# 版本号只定义在 src/version.py，这里动态读取并生成 exe 的
+# Windows 版本资源（右键属性 → 详细信息）。升版只改那一行。
+import sys
+# PyInstaller 执行 spec 的环境不含项目根目录，手动加入才能 import src
+sys.path.insert(0, os.path.dirname(os.path.abspath(SPEC)))
+from src.version import APP_VERSION
+from PyInstaller.utils.win32 import versioninfo as vi
+
+_version_tuple = tuple(int(x) for x in APP_VERSION.split('.'))
+while len(_version_tuple) < 4:  # 不足四段补零，Windows 要求四段式
+    _version_tuple += (0,)
+
+_version_info = vi.VSVersionInfo(
+    ffi=vi.FixedFileInfo(
+        filevers=_version_tuple,
+        prodvers=_version_tuple,
+        mask=0x3f,
+        flags=0x0,
+        OS=0x40004,        # VOS_NT_WINDOWS32
+        fileType=0x1,      # VFT_APP（应用程序）
+        subtype=0x0,
+        date=(0, 0)
+    ),
+    kids=[
+        vi.StringFileInfo([
+            vi.StringTable('080404b0', [   # 0804=简体中文, 04b0=Unicode
+                vi.StringStruct('CompanyName', 'dokodemo'),
+                vi.StringStruct('FileDescription', '桌面快捷方式管理工具'),
+                vi.StringStruct('FileVersion', APP_VERSION),
+                vi.StringStruct('InternalName', 'dokodemo'),
+                vi.StringStruct('LegalCopyright', 'Copyright (C) 2026 dokodemo'),
+                vi.StringStruct('OriginalFilename', 'dokodemo.exe'),
+                vi.StringStruct('ProductName', 'dokodemo'),
+                vi.StringStruct('ProductVersion', APP_VERSION),
+            ])
+        ]),
+        vi.VarFileInfo([vi.VarStruct('Translation', [2052, 1200])]),
+    ],
+)
+
 # ── 排除确定不用的 Python 模块 ──────────────────────
 
 # PyQt5 未使用的子模块
@@ -374,6 +415,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    version=_version_info,
     icon=['app.ico'],
 )
 

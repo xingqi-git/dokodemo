@@ -476,7 +476,10 @@ class MainWindow(QWidget):
         此时靠 nativeEvent 和 click-outside 轮询兜底。
         """
         if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
-            if not self._suppress_auto_minimize and self.isVisible():
+            if (not self._suppress_auto_minimize
+                    and QApplication.activeModalWidget() is None
+                    and not self._app_menu_open()
+                    and self.isVisible()):
                 self.dock_away()
         super().changeEvent(event)
 
@@ -494,11 +497,22 @@ class MainWindow(QWidget):
                     lo_word = msg.wParam & 0xFFFF  # 0=WA_INACTIVE
                     if lo_word == 0:
                         if (not self._suppress_auto_minimize
+                                and QApplication.activeModalWidget() is None
+                                and not self._app_menu_open()
                                 and self.isVisible()):
                             self.dock_away()
             except Exception:
                 pass
         return super().nativeEvent(eventType, message)
+
+    def _app_menu_open(self):
+        """应用自己的弹出菜单（含级联子菜单）是否正打开着。
+
+        QMenu 是独立顶层窗口，经常弹出在主窗口矩形之外（"停靠方式"的
+        级联子菜单就是典型的侧向弹出）。用户点击子菜单项时，三层失活
+        监听会把这次点击误判成"点了主窗口外面"而收起窗口，导致菜单
+        点击不生效。"""
+        return QApplication.activePopupWidget() is not None
 
     # ---- 标题栏拖动 & 边缘缩放 ----
     def _hit_test_edge(self, pos):
@@ -935,6 +949,14 @@ class MainWindow(QWidget):
         清除 suppress——之后三层监听都正常工作。
         """
         if not self.isVisible():
+            return
+        # 有模态对话框（输入分组名、删除确认等）开着时，主窗口失活/用户
+        # 点击对话框（在主窗口矩形外）都属正常交互，绝不能收起
+        if QApplication.activeModalWidget() is not None:
+            return
+        # 弹出菜单（含级联子菜单）开着时同理——菜单本体常在主窗口矩形外，
+        # 点菜单项不能被当成"点了窗口外面"
+        if self._app_menu_open():
             return
         if self._suppress_auto_minimize:
             # 抑制期间顺便检查我们有没有终于拿到前台
