@@ -46,14 +46,15 @@ _version_info = vi.VSVersionInfo(
     kids=[
         vi.StringFileInfo([
             vi.StringTable('080404b0', [   # 0804=简体中文, 04b0=Unicode
-                vi.StringStruct('CompanyName', 'dokodemo'),
+                # vi.StringStruct('CompanyName', 'xingqi'),
                 vi.StringStruct('FileDescription', '桌面快捷方式管理工具'),
                 vi.StringStruct('FileVersion', APP_VERSION),
                 vi.StringStruct('InternalName', 'dokodemo'),
-                vi.StringStruct('LegalCopyright', 'Copyright (C) 2026 dokodemo'),
+                vi.StringStruct('LegalCopyright', 'Copyright © 2026 xingqi'),
                 vi.StringStruct('OriginalFilename', 'dokodemo.exe'),
                 vi.StringStruct('ProductName', 'dokodemo'),
                 vi.StringStruct('ProductVersion', APP_VERSION),
+                vi.StringStruct('Comments', '仅供个人学习使用，禁止商用'),
             ])
         ]),
         vi.VarFileInfo([vi.VarStruct('Translation', [2052, 1200])]),
