@@ -207,7 +207,9 @@ def _resolve_lnk_target_shell(lnk_path):
         )
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, timeout=5,
+            # 打包版无控制台，不隐藏的话会弹出 PowerShell 黑框
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         target = out.stdout.strip()
         return target or None
