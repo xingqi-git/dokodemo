@@ -173,15 +173,46 @@ def _crop_and_fill(pixmap, size):
 
 @lru_cache(maxsize=512)
 def _resolve_lnk_target(lnk_path):
-    """解析 .lnk 快捷方式的目标路径（带缓存）"""
+    """解析 .lnk 快捷方式的目标路径（带缓存）
+
+    pylnk3 对部分 lnk（特殊结构/相对路径/文件夹目标等）解析会失败，
+    失败后返回 None，由上层用 _resolve_lnk_target_shell 兜底。"""
     try:
         import pylnk3
         target = pylnk3.parse(lnk_path).path
-        if target and os.path.exists(target):
-            return target
+        if target:
+            # 规范化：去掉文件夹 lnk 常见的尾随反斜杠、统一分隔符
+            target = os.path.normpath(target)
+            if os.path.exists(target):
+                return target
     except Exception:
         pass
     return None
+
+
+def _resolve_lnk_target_shell(lnk_path):
+    """用 WScript.Shell COM（经 PowerShell）兜底解析 lnk 目标。
+
+    仅在 pylnk3 解析失败时调用（有约 1 秒的子进程开销）。
+    WScript.Shell 对文件夹目标的 lnk 支持良好，可补 pylnk3 的短板。
+    特殊外壳文件夹（此电脑/网络连接等）没有文件系统路径，会失败返回 None。"""
+    try:
+        import subprocess
+        # 单引号内的单引号用两个单引号转义
+        safe = lnk_path.replace("'", "''")
+        script = (
+            "$s = New-Object -ComObject WScript.Shell;"
+            f"$lnk = $s.CreateShortcut('{safe}');"
+            "$lnk.TargetPath"
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=5
+        )
+        target = out.stdout.strip()
+        return target or None
+    except Exception:
+        return None
 
 
 def _get_default_icon(size):
@@ -218,9 +249,20 @@ def open_shortcut_location(lnk_path):
     使用 SHOpenFolderAndSelectItems API，比启动 explorer 进程更快
     """
     try:
+        # 条目本身是文件夹（不是 .lnk）：直接打开其父目录并选中它
+        if os.path.isdir(lnk_path):
+            return _open_and_select_in_explorer(lnk_path)
+
         target = _resolve_lnk_target(lnk_path)
-        open_path = target if target else lnk_path
-        return _open_and_select_in_explorer(open_path)
+        if not target:
+            # pylnk3 失败（部分文件夹 lnk / 特殊结构 lnk），换 WScript.Shell 兜底
+            target = _resolve_lnk_target_shell(lnk_path)
+            if target:
+                target = os.path.normpath(target)
+        if target and os.path.exists(target):
+            return _open_and_select_in_explorer(target)
+        # 都解析失败：打开 .lnk 所在目录
+        return _open_and_select_in_explorer(lnk_path)
     except Exception as e:
         print(f"打开所在位置失败: {e}")
         return False
@@ -300,7 +342,9 @@ def _open_and_select_in_explorer(file_path):
     # 兜底：subprocess 启动 explorer
     try:
         import subprocess
-        subprocess.Popen(f'explorer /select,"{file_path}"', shell=True)
+        # 尾随反斜杠会吃掉 cmd 的闭合引号（explorer 只开默认窗口），先规范化
+        safe_path = os.path.normpath(file_path)
+        subprocess.Popen(f'explorer /select,"{safe_path}"', shell=True)
         return True
     except Exception as e:
         print(f"打开所在位置失败: {e}")
